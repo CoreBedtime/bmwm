@@ -109,6 +109,14 @@ static void on_configure_request(BwmWM *wm, const xcb_configure_request_event_t 
 
 static void on_button_press(BwmWM *wm, const xcb_button_press_event_t *ev)
 {
+    if (wm->exit_button != XCB_NONE && ev->event == wm->exit_button && ev->detail == XCB_BUTTON_INDEX_1) {
+        fprintf(stdout, "[bwm] exit button pressed\n");
+        fflush(stdout);
+        g_bwm_running = 0;
+        xcb_flush(wm->conn);
+        return;
+    }
+
     BwmClient *tc = bwm_find_by_titlebar(wm, ev->event);
     if (tc != NULL && ev->detail == XCB_BUTTON_INDEX_1) {
         bwm_set_focus(wm, tc);
@@ -162,6 +170,10 @@ static void on_motion_notify(BwmWM *wm, const xcb_motion_notify_event_t *ev)
 static void on_expose(BwmWM *wm, const xcb_expose_event_t *ev)
 {
     if (ev->count != 0) return;
+    if (wm->exit_button != XCB_NONE && ev->window == wm->exit_button) {
+        bwm_redraw_exit_button(wm);
+        return;
+    }
     BwmClient *c = bwm_find_by_titlebar(wm, ev->window);
     if (c != NULL) bwm_redraw_titlebar(wm, c);
 }

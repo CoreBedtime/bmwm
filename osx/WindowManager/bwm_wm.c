@@ -29,6 +29,88 @@ static void bwm_set_default_config(BwmWM *wm)
     wm->config.titlebar_focus_color = BWM_COLOR_TITLE_FOCUS;
 }
 
+static bool env_flag(const char *name)
+{
+    const char *value = getenv(name);
+    return value != NULL && *value != '\0' && strcmp(value, "0") != 0;
+}
+
+static xcb_gcontext_t make_gc(BwmWM *wm, xcb_drawable_t drawable, uint32_t foreground, uint32_t line_width)
+{
+    xcb_gcontext_t gc = xcb_generate_id(wm->conn);
+    uint32_t mask = XCB_GC_FOREGROUND | XCB_GC_GRAPHICS_EXPOSURES | XCB_GC_LINE_WIDTH;
+    uint32_t vals[] = { foreground, 0, line_width };
+    xcb_create_gc(wm->conn, gc, drawable, mask, vals);
+    return gc;
+}
+
+static void draw_exit_button(BwmWM *wm)
+{
+    if (wm->exit_button == XCB_NONE) {
+        return;
+    }
+
+    uint16_t width = BWM_EXIT_BUTTON_W;
+    uint16_t height = BWM_EXIT_BUTTON_H;
+
+    xcb_gcontext_t bg_gc = make_gc(wm, wm->exit_button, BWM_COLOR_EXIT_BG, 0);
+    xcb_rectangle_t rect = { 0, 0, width, height };
+    xcb_poly_fill_rectangle(wm->conn, wm->exit_button, bg_gc, 1, &rect);
+    xcb_free_gc(wm->conn, bg_gc);
+
+    xcb_gcontext_t gc = make_gc(wm, wm->exit_button, BWM_COLOR_EXIT_FG, 2);
+    xcb_segment_t segments[2] = {
+        { 6, 6, (int16_t)(width - 7), (int16_t)(height - 7) },
+        { 6, (int16_t)(height - 7), (int16_t)(width - 7), 6 }
+    };
+    xcb_poly_segment(wm->conn, wm->exit_button, gc, 2, segments);
+    xcb_free_gc(wm->conn, gc);
+}
+
+void bwm_redraw_exit_button(BwmWM *wm)
+{
+    draw_exit_button(wm);
+}
+
+static void create_exit_button(BwmWM *wm)
+{
+    if (!wm->exit_button_enabled || wm->exit_button != XCB_NONE) {
+        return;
+    }
+
+    wm->exit_button = xcb_generate_id(wm->conn);
+
+    uint16_t width = BWM_EXIT_BUTTON_W;
+    uint16_t height = BWM_EXIT_BUTTON_H;
+    int16_t x = 8;
+    int16_t y = 8;
+    if (wm->root_w > (uint16_t)(width + 16)) {
+        x = (int16_t)(wm->root_w - width - 8);
+    }
+    if (wm->root_h <= (uint16_t)(height + 16)) {
+        y = 0;
+    }
+
+    uint32_t mask = XCB_CW_BACK_PIXEL | XCB_CW_OVERRIDE_REDIRECT | XCB_CW_EVENT_MASK;
+    uint32_t vals[] = {
+        BWM_COLOR_EXIT_BG,
+        1,
+        XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_EXPOSURE
+    };
+    xcb_create_window(wm->conn, XCB_COPY_FROM_PARENT, wm->exit_button, wm->root,
+                      x, y, width, height, 0,
+                      XCB_WINDOW_CLASS_INPUT_OUTPUT, wm->screen->root_visual, mask, vals);
+    xcb_map_window(wm->conn, wm->exit_button);
+    uint32_t stack = XCB_STACK_MODE_ABOVE;
+    xcb_configure_window(wm->conn, wm->exit_button,
+                         XCB_CONFIG_WINDOW_STACK_MODE, &stack);
+    draw_exit_button(wm);
+    xcb_flush(wm->conn);
+
+    fprintf(stdout, "[bwm] exit button enabled via BWM_ENABLE_EXIT_BUTTON\n");
+    fflush(stdout);
+}
+
 /* -------------------------------------------------------------------------
  * Init / destroy
  * ---------------------------------------------------------------------- */
@@ -36,6 +118,8 @@ static void bwm_set_default_config(BwmWM *wm)
 int bwm_init(BwmWM *wm)
 {
     memset(wm, 0, sizeof(*wm));
+    wm->exit_button = XCB_NONE;
+    wm->exit_button_enabled = env_flag("BWM_ENABLE_EXIT_BUTTON");
 
     int screen_index = 0;
     wm->conn = xcb_connect(NULL, &screen_index);
@@ -99,6 +183,7 @@ int bwm_init(BwmWM *wm)
     xcb_configure_window(wm->conn, wm->cursor_win,
                          XCB_CONFIG_WINDOW_STACK_MODE, &cursor_stack);
 
+    create_exit_button(wm);
     xcb_flush(wm->conn);
 
     fprintf(stdout, "[bwm] running on display %s (%ux%u)\n",
@@ -110,6 +195,11 @@ int bwm_init(BwmWM *wm)
 
 void bwm_destroy(BwmWM *wm)
 {
+    if (wm->exit_button != XCB_NONE) {
+        xcb_destroy_window(wm->conn, wm->exit_button);
+        wm->exit_button = XCB_NONE;
+    }
+
     while (wm->clients != NULL) {
         BwmClient *c = wm->clients;
         bwm_client_remove(wm, c);

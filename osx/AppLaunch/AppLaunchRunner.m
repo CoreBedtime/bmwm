@@ -10,8 +10,10 @@
 
 #include "frida-core.h"
 
+#include <dlfcn.h>
 #include <errno.h>
 #include <limits.h>
+#include <mach-o/getsect.h>
 #include <signal.h>
 #include <spawn.h>
 #include <stdbool.h>
@@ -19,12 +21,25 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 extern char **environ;
 
 static GMainLoop *g_loop = NULL;
 static guint g_target_pid = 0;
+static gboolean g_target_resumed = FALSE;
+
+int AppLaunchRun(int argc, char *argv[]);
+
+static void log_stage(const char *stage)
+{
+    char buffer[256];
+    int len = snprintf(buffer, sizeof(buffer), "[helper] %s\n", stage);
+    if (len > 0) {
+        write(STDERR_FILENO, buffer, (size_t) len);
+    }
+}
 
 static void on_message(FridaScript *script,
                        const gchar *message,
@@ -70,9 +85,116 @@ static void on_signal(int signo)
     g_idle_add(stop_loop, NULL);
 }
 
-static bool copy_executable_path(const char *bundle_path,
-                                 char *executable_path,
-                                 size_t executable_path_size)
+static bool path_is_directory(const char *path)
+{
+    struct stat st;
+
+    if (path == NULL || stat(path, &st) != 0) {
+        return false;
+    }
+
+    return S_ISDIR(st.st_mode);
+}
+
+static bool copy_path_string(const char *source,
+                             char *destination,
+                             size_t destination_size)
+{
+    int written = 0;
+
+    if (source == NULL || destination == NULL || destination_size == 0) {
+        return false;
+    }
+
+    written = snprintf(destination, destination_size, "%s", source);
+    return written >= 0 && (size_t) written < destination_size;
+}
+
+static bool copy_resolved_executable_path(const char *target_path,
+                                          char *executable_path,
+                                          size_t executable_path_size)
+{
+    bool ok = false;
+    char *resolved = NULL;
+    const char *source_path = target_path;
+
+    if (target_path == NULL || *target_path == '\0') {
+        return false;
+    }
+
+    resolved = realpath(target_path, NULL);
+    if (resolved != NULL) {
+        source_path = resolved;
+    }
+
+    if (access(source_path, X_OK) != 0) {
+        goto out;
+    }
+
+    ok = copy_path_string(source_path, executable_path, executable_path_size);
+
+out:
+    if (resolved != NULL) {
+        free(resolved);
+    }
+    return ok;
+}
+
+static bool copy_path_lookup_executable(const char *target_name,
+                                        char *executable_path,
+                                        size_t executable_path_size)
+{
+    bool ok = false;
+    char *path_copy = NULL;
+    char *cursor = NULL;
+    char *entry = NULL;
+    const char *path_env = getenv("PATH");
+
+    if (target_name == NULL || *target_name == '\0') {
+        return false;
+    }
+
+    if (strchr(target_name, '/') != NULL) {
+        return copy_resolved_executable_path(target_name,
+                                             executable_path,
+                                             executable_path_size);
+    }
+
+    if (path_env == NULL || *path_env == '\0') {
+        path_env = "/usr/bin:/bin:/usr/sbin:/sbin";
+    }
+
+    path_copy = strdup(path_env);
+    if (path_copy == NULL) {
+        return false;
+    }
+
+    cursor = path_copy;
+    while ((entry = strsep(&cursor, ":")) != NULL) {
+        char candidate[PATH_MAX];
+        const char *dir = (*entry == '\0') ? "." : entry;
+        int written = snprintf(candidate, sizeof(candidate), "%s/%s", dir, target_name);
+        if (written < 0 || (size_t) written >= sizeof(candidate)) {
+            continue;
+        }
+
+        if (!copy_resolved_executable_path(candidate,
+                                           executable_path,
+                                           executable_path_size)) {
+            continue;
+        }
+
+        ok = true;
+        break;
+    }
+
+    free(path_copy);
+    return ok;
+}
+
+static bool copy_bundle_executable_path(const char *bundle_path,
+                                        char *executable_path,
+                                        size_t executable_path_size)
 {
     bool ok = false;
     CFURLRef bundle_url = NULL;
@@ -119,6 +241,23 @@ out:
     return ok;
 }
 
+static bool copy_target_executable_path(const char *target_path,
+                                        char *executable_path,
+                                        size_t executable_path_size)
+{
+    if (path_is_directory(target_path)) {
+        if (copy_bundle_executable_path(target_path,
+                                        executable_path,
+                                        executable_path_size)) {
+            return true;
+        }
+    }
+
+    return copy_path_lookup_executable(target_path,
+                                       executable_path,
+                                       executable_path_size);
+}
+
 static bool find_target_pid(FridaDevice *device, const char *executable_name, guint *pid_out)
 {
     GError *error = NULL;
@@ -150,6 +289,105 @@ static bool find_target_pid(FridaDevice *device, const char *executable_name, gu
     return false;
 }
 
+static bool copy_target_pid_from_env(guint *pid_out)
+{
+    const char *pid_text = getenv("APP_LAUNCH_TARGET_PID");
+    char *end = NULL;
+    unsigned long parsed = 0;
+
+    if (pid_text == NULL || *pid_text == '\0') {
+        return false;
+    }
+
+    errno = 0;
+    parsed = strtoul(pid_text, &end, 10);
+    if (errno != 0 || end == pid_text || *end != '\0' || parsed == 0 || parsed > UINT_MAX) {
+        return false;
+    }
+
+    if (pid_out != NULL) {
+        *pid_out = (guint) parsed;
+    }
+    return true;
+}
+
+static char *copy_embedded_script(void)
+{
+    Dl_info info;
+    unsigned long script_size = 0;
+    const char *script_data = NULL;
+    char *script_source = NULL;
+
+    memset(&info, 0, sizeof(info));
+    if (dladdr((const void *) &AppLaunchRun, &info) == 0 || info.dli_fbase == NULL) {
+        g_printerr("Failed to locate embedded script image\n");
+        return NULL;
+    }
+
+    script_data = (const char *) getsectiondata((const struct mach_header_64 *) info.dli_fbase,
+                                                "__TEXT",
+                                                "__app_launch_js",
+                                                &script_size);
+    if (script_data == NULL || script_size == 0) {
+        g_printerr("Failed to locate embedded script section\n");
+        return NULL;
+    }
+
+    script_source = malloc((size_t) script_size + 1);
+    if (script_source == NULL) {
+        g_printerr("Failed to allocate embedded script buffer\n");
+        return NULL;
+    }
+
+    memcpy(script_source, script_data, (size_t) script_size);
+    script_source[script_size] = '\0';
+    return script_source;
+}
+
+static gboolean resume_target_process(FridaDevice *device)
+{
+    if (g_target_resumed || g_target_pid == 0) {
+        g_print("[helper] resume skipped: target already resumed or pid unset\n");
+        return TRUE;
+    }
+
+    gboolean resumed = FALSE;
+
+    g_print("[helper] attempting SIGCONT for pid %u\n", g_target_pid);
+    if (kill((pid_t) g_target_pid, SIGCONT) == 0) {
+        resumed = TRUE;
+        g_print("[helper] SIGCONT accepted for pid %u\n", g_target_pid);
+    } else {
+        g_printerr("Failed to send SIGCONT to target process %u: %s\n",
+                   g_target_pid,
+                   strerror(errno));
+    }
+
+    if (device != NULL) {
+        GError *error = NULL;
+
+        g_print("[helper] attempting Frida device resume for pid %u\n", g_target_pid);
+        frida_device_resume_sync(device, g_target_pid, NULL, &error);
+        if (error != NULL) {
+            g_printerr("Frida resume for target process %u reported: %s\n",
+                       g_target_pid,
+                       error->message);
+            g_error_free(error);
+        } else {
+            resumed = TRUE;
+            g_print("[helper] Frida resume accepted for pid %u\n", g_target_pid);
+        }
+    }
+
+    if (!resumed) {
+        return FALSE;
+    }
+
+    g_target_resumed = TRUE;
+    g_print("[*] Resumed target process %u\n", g_target_pid);
+    return TRUE;
+}
+
 __attribute__((visibility("default")))
 int AppLaunchRun(int argc, char *argv[])
 {
@@ -161,6 +399,7 @@ int AppLaunchRun(int argc, char *argv[])
     GError *error = NULL;
     char executable_path[PATH_MAX];
     char *executable_name = NULL;
+    char *script_source = NULL;
     gboolean session_attached = FALSE;
     gboolean script_loaded = FALSE;
     int exit_code = 0;
@@ -170,13 +409,21 @@ int AppLaunchRun(int argc, char *argv[])
     fprintf(stderr, "[helper] entered AppLaunchRun argc=%d\n", argc);
 
     if (argc < 2) {
-        fprintf(stderr, "Usage: %s /path/to/App.app [app-args...]\n", argv[0]);
+        fprintf(stderr,
+                "Usage: %s /path/to/App.app|/path/to/executable [target-args...]\n",
+                argv[0]);
         return 1;
     }
 
-    if (!copy_executable_path(argv[1], executable_path, sizeof(executable_path))) {
-        g_printerr("Failed to resolve executable path for: %s\n", argv[1]);
+    log_stage("step 1: resolving target executable path");
+    if (!copy_target_executable_path(argv[1], executable_path, sizeof(executable_path))) {
+        g_printerr("Failed to resolve launch target executable path for: %s\n", argv[1]);
         return 1;
+    }
+
+    log_stage("step 2: reading target pid from environment");
+    if (!copy_target_pid_from_env(&g_target_pid)) {
+        g_print("[helper] APP_LAUNCH_TARGET_PID is unset, falling back to process lookup\n");
     }
 
     executable_name = strrchr(executable_path, '/');
@@ -188,10 +435,10 @@ int AppLaunchRun(int argc, char *argv[])
 
     frida_init();
 
-    fprintf(stderr, "[helper] creating device manager\n");
+    log_stage("step 3: creating Frida device manager");
     manager = frida_device_manager_new();
 
-    fprintf(stderr, "[helper] enumerating devices\n");
+    log_stage("step 4: enumerating devices");
     devices = frida_device_manager_enumerate_devices_sync(manager, NULL, &error);
     if (error != NULL) {
         g_printerr("Failed to enumerate devices: %s\n", error->message);
@@ -225,13 +472,16 @@ int AppLaunchRun(int argc, char *argv[])
         goto out;
     }
 
-    fprintf(stderr, "[helper] polling for launched process\n");
-    for (gint attempt = 0; attempt < 100; attempt++) {
-        if (find_target_pid(local_device, executable_name, &g_target_pid)) {
-            break;
-        }
+    log_stage("step 5: selecting local device");
+    if (g_target_pid == 0) {
+        log_stage("step 6: polling for launched process");
+        for (gint attempt = 0; attempt < 100; attempt++) {
+            if (find_target_pid(local_device, executable_name, &g_target_pid)) {
+                break;
+            }
 
-        g_usleep(100000);
+            g_usleep(100000);
+        }
     }
 
     if (g_target_pid == 0) {
@@ -242,6 +492,7 @@ int AppLaunchRun(int argc, char *argv[])
 
     g_print("[*] Found process pid %u\n", g_target_pid);
 
+    log_stage("step 7: attaching to target process");
     session = frida_device_attach_sync(local_device, g_target_pid, NULL, NULL, &error);
     if (error != NULL) {
         g_printerr("Failed to attach to pid %u: %s\n", g_target_pid, error->message);
@@ -254,41 +505,21 @@ int AppLaunchRun(int argc, char *argv[])
     g_print("[*] Attached to pid %u\n", g_target_pid);
     session_attached = TRUE;
 
+    log_stage("step 8: loading embedded Frida script data");
+    script_source = copy_embedded_script();
+    if (script_source == NULL) {
+        exit_code = 1;
+        goto out;
+    }
+
+    log_stage("step 9: creating Frida script");
     script = frida_session_create_script_sync(session,
-                                             "function resolveExport(name) {\n"
-                                             "  if (typeof Module.getGlobalExportByName === 'function') {\n"
-                                             "    return Module.getGlobalExportByName(name);\n"
-                                             "  }\n"
-                                             "  if (typeof Module.findExportByName === 'function') {\n"
-                                             "    return Module.findExportByName(null, name);\n"
-                                             "  }\n"
-                                             "  throw new Error('No export lookup function available');\n"
-                                             "}\n"
-                                             "var openPtr = resolveExport('open');\n"
-                                             "if (openPtr !== null) {\n"
-                                             "  Interceptor.attach(openPtr, {\n"
-                                             "    onEnter: function (args) {\n"
-                                             "      var path = '<unavailable>';\n"
-                                             "      try {\n"
-                                             "        path = args[0].readUtf8String();\n"
-                                             "      } catch (e) {\n"
-                                             "        path = '<error: ' + e + '>';\n"
-                                             "      }\n"
-                                             "      console.log('[*] open(\"' + path + '\")');\n"
-                                             "    }\n"
-                                             "  });\n"
-                                             "}\n"
-                                             "var closePtr = resolveExport('close');\n"
-                                             "if (closePtr !== null) {\n"
-                                             "  Interceptor.attach(closePtr, {\n"
-                                             "    onEnter: function (args) {\n"
-                                             "      console.log('[*] close(' + args[0].toInt32() + ')');\n"
-                                             "    }\n"
-                                             "  });\n"
-                                             "}",
+                                             script_source,
                                              NULL,
                                              NULL,
                                              &error);
+    free(script_source);
+    script_source = NULL;
     if (error != NULL) {
         g_printerr("Failed to create script: %s\n", error->message);
         g_error_free(error);
@@ -299,6 +530,7 @@ int AppLaunchRun(int argc, char *argv[])
 
     g_signal_connect(script, "message", G_CALLBACK(on_message), NULL);
 
+    log_stage("step 10: loading Frida script");
     frida_script_load_sync(script, NULL, &error);
     if (error != NULL) {
         g_printerr("Failed to load script: %s\n", error->message);
@@ -311,6 +543,13 @@ int AppLaunchRun(int argc, char *argv[])
     g_print("[*] Script loaded\n");
     script_loaded = TRUE;
 
+    log_stage("step 11: resuming target process");
+    if (!resume_target_process(local_device)) {
+        exit_code = 1;
+        goto out;
+    }
+
+    log_stage("step 12: entering main loop");
     g_timeout_add_seconds(1, watch_target_process, NULL);
     g_loop = g_main_loop_new(NULL, FALSE);
     signal(SIGINT, on_signal);
@@ -318,9 +557,15 @@ int AppLaunchRun(int argc, char *argv[])
     g_main_loop_run(g_loop);
 
 out:
+    log_stage("cleanup: unwinding helper state");
     if (error != NULL) {
         g_error_free(error);
     }
+    if (script_source != NULL) {
+        free(script_source);
+    }
+
+    resume_target_process(local_device);
 
     if (script != NULL) {
         if (script_loaded) {

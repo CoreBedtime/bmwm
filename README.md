@@ -59,6 +59,7 @@ These binaries come from the XQuartz package, not MacPorts. The code uses them t
 - `./scripts/start-bwm.sh` starts the loader with `RENDER_SERVER_EXTERNAL_WM=1`, then launches `bwm`
 - `./scripts/start-thunar-bwm.sh` starts the loader with `RENDER_SERVER_EXTERNAL_WM=1`, then launches `bwm` and Thunar
 - `./scripts/start-thunar-xterm-bwm.sh` starts the loader with `RENDER_SERVER_EXTERNAL_WM=1`, then launches `bwm`, Thunar, and xterm
+- `./scripts/start-applaunch-bwm.sh /path/to/App.app [app-args...]` starts the loader with `RENDER_SERVER_EXTERNAL_WM=1`, then launches `bwm` and `AppLaunch` on the same X display
 - `./.build/ninja/osx/AppLaunch /path/to/App.app [app-args...]` launches the app bundle executable and injects it with Frida before resume
 
 ## License

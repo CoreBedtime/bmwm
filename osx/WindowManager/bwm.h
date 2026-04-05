@@ -23,9 +23,14 @@
 #define BWM_COLOR_TITLE_BG    0xFF3C3F41
 #define BWM_COLOR_TITLE_FOCUS 0xFF214283
 #define BWM_COLOR_BORDER      0xFF555555
+#define BWM_COLOR_EXIT_BG     0xFF8B2E2E
+#define BWM_COLOR_EXIT_FG     0xFFFFFFFF
 
 #define BWM_MIN_CLIENT_W      80
 #define BWM_MIN_CLIENT_H      40
+
+#define BWM_EXIT_BUTTON_W     32
+#define BWM_EXIT_BUTTON_H     22
 
 /* -------------------------------------------------------------------------
  * Config
@@ -84,6 +89,8 @@ struct BwmWM {
     xcb_screen_t     *screen;
     xcb_window_t      root;
     xcb_window_t      cursor_win;
+    xcb_window_t      exit_button;
+    bool              exit_button_enabled;
 
     /* atoms */
     xcb_atom_t atom_wm_delete_window;
@@ -127,6 +134,7 @@ BwmClient *bwm_frame_window(BwmWM *wm, xcb_window_t client_win, bool already_map
 void       bwm_unframe(BwmWM *wm, BwmClient *c);
 
 void       bwm_redraw_titlebar(BwmWM *wm, BwmClient *c);
+void       bwm_redraw_exit_button(BwmWM *wm);
 void       bwm_move_frame(BwmWM *wm, BwmClient *c, int16_t x, int16_t y);
 void       bwm_resize_frame(BwmWM *wm, BwmClient *c, uint16_t cw, uint16_t ch);
 void       bwm_toggle_maximise(BwmWM *wm, BwmClient *c);

@@ -262,8 +262,46 @@ add_library(AppLaunchRunner SHARED
     AppLaunch/AppLaunchRunner.m
 )
 
+find_program(FRIDA_COMPILE_EXECUTABLE
+    NAMES frida-compile
+    HINTS /Library/Frameworks/Python.framework/Versions/3.10/bin
+)
+
+if(NOT FRIDA_COMPILE_EXECUTABLE)
+    message(FATAL_ERROR "frida-compile is required to bundle AppLaunchRunner")
+endif()
+
+set(APP_LAUNCH_SCRIPT_ENTRY "${CMAKE_CURRENT_SOURCE_DIR}/AppLaunch/AppLaunchRunner.entry.js")
+set(APP_LAUNCH_SCRIPT_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/AppLaunch/AppLaunchRunner.script.js")
+set(APP_LAUNCH_BUNDLED_SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/AppLaunchRunner.bundle.js")
+
+add_custom_command(
+    OUTPUT "${APP_LAUNCH_BUNDLED_SCRIPT}"
+    COMMAND "${FRIDA_COMPILE_EXECUTABLE}" "${APP_LAUNCH_SCRIPT_ENTRY}" -o "${APP_LAUNCH_BUNDLED_SCRIPT}"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/AppLaunch"
+    DEPENDS
+        "${APP_LAUNCH_SCRIPT_ENTRY}"
+        "${APP_LAUNCH_SCRIPT_SOURCE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/AppLaunch/vendor/frida-objc-bridge/index.js"
+        "${CMAKE_CURRENT_SOURCE_DIR}/AppLaunch/vendor/frida-objc-bridge/lib/api.js"
+        "${CMAKE_CURRENT_SOURCE_DIR}/AppLaunch/vendor/frida-objc-bridge/lib/fastpaths.js"
+        "${CMAKE_CURRENT_SOURCE_DIR}/AppLaunch/vendor/frida-objc-bridge/package.json"
+    VERBATIM
+)
+
+add_custom_target(AppLaunchRunnerBundle DEPENDS "${APP_LAUNCH_BUNDLED_SCRIPT}")
+add_dependencies(AppLaunchRunner AppLaunchRunnerBundle)
+
 target_compile_options(AppLaunchRunner PRIVATE
     $<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>
+)
+
+target_link_options(AppLaunchRunner PRIVATE
+    "-Wl,-sectcreate,__TEXT,__app_launch_js,${APP_LAUNCH_BUNDLED_SCRIPT}"
+)
+
+set_target_properties(AppLaunchRunner PROPERTIES
+    LINK_DEPENDS "${APP_LAUNCH_BUNDLED_SCRIPT}"
 )
 
 target_include_directories(AppLaunchRunner PRIVATE
