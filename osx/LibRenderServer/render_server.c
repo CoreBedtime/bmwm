@@ -19,7 +19,7 @@
 
 #include "iomfb.h"
 
-#define RENDER_SERVER_FRAME_INTERVAL_MS 33
+#define RENDER_SERVER_FRAME_INTERVAL_MS 16
 #define RENDER_SERVER_MODEL_REFRESH_HZ 60
 #define RENDER_SERVER_DISPLAYFD 99
 #define RENDER_SERVER_MAX_PIXEL_CLOCK_MHZ 300.0
@@ -703,8 +703,24 @@ static int render_server_connect_x11(XServerState *server)
     return 1;
 }
 
+static bool render_server_external_wm(void)
+{
+    const char *val = getenv("RENDER_SERVER_EXTERNAL_WM");
+    return val != NULL && val[0] == '1' && val[1] == '\0';
+}
+
 static int render_server_claim_window_manager(XServerState *server)
 {
+    /* When an external WM (e.g. bwm) will manage windows, skip claiming
+     * SubstructureRedirect — the external WM will own it instead. */
+    if (render_server_external_wm()) {
+        fprintf(stdout,
+                "[RenderServer] external WM mode: skipping window manager claim on %s\n",
+                server->display_name);
+        fflush(stdout);
+        return 0;
+    }
+
     uint32_t event_mask = XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT |
                           XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY |
                           XCB_EVENT_MASK_PROPERTY_CHANGE;

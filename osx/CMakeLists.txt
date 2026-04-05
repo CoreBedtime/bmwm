@@ -100,3 +100,39 @@ add_custom_command(TARGET MainUserspace POST_BUILD
             "$<TARGET_FILE:MainUserspace>"
     VERBATIM
 )
+
+find_library(XCB_XTEST_LIBRARY xcb-xtest HINTS /opt/local/lib REQUIRED)
+
+# bwm — standalone reparenting X11 window manager with HID input
+# Connects to an existing $DISPLAY; no dependency on FramebufferLib / IOMFB.
+add_executable(bwm
+    WindowManager/main.c
+    WindowManager/bwm_wm.c
+    WindowManager/client.c
+    WindowManager/focus.c
+    WindowManager/events.c
+    WindowManager/input.c
+)
+
+target_include_directories(bwm PRIVATE
+    "${XCB_INCLUDE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/WindowManager"
+)
+
+target_link_libraries(bwm PRIVATE
+    "${XCB_LIBRARY}"
+    "${XCB_XTEST_LIBRARY}"
+    "${IOKIT_FRAMEWORK}"
+    "${COREFOUNDATION_FRAMEWORK}"
+)
+
+set_target_properties(bwm PROPERTIES OUTPUT_NAME "bwm")
+
+add_custom_command(TARGET bwm POST_BUILD
+    COMMAND "${CODESIGN_EXECUTABLE}"
+            --force
+            --sign -
+            --entitlements "${CMAKE_CURRENT_SOURCE_DIR}/OSEntitlements.plist"
+            "$<TARGET_FILE:bwm>"
+    VERBATIM
+)
