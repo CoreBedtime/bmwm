@@ -1,14 +1,11 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "compositing.h"
+#include "lua_config.h"
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreGraphics/CoreGraphics.h>
 #include <ImageIO/ImageIO.h>
-#include <lua.h>
-#include <lauxlib.h>
-#include <lualib.h>
-#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,23 +21,22 @@ typedef struct {
 } RenderServerWindowRect;
 
 typedef struct {
-    int16_t  x_offset;
-    int16_t  y_offset;
-    uint16_t spread;
-    uint8_t  opacity;
-} RenderServerShadowPass;
-
-typedef struct {
     uint32_t background_color;
     CGImageRef background_image;
 } RenderServerBackdrop;
 
+typedef struct {
+    bool     enabled;
+    int16_t  x_offset;
+    int16_t  y_offset;
+    uint16_t spread;
+    uint8_t  opacity;
+    uint32_t color;
+} RenderServerShadow;
+
 struct RenderServerCompositor {
     RenderServerBackdrop backdrop;
-};
-
-static const RenderServerShadowPass k_render_server_shadow_passes[] = {
-    { 0,  6, 28, 52 },
+    RenderServerShadow shadow;
 };
 
 static void render_server_blend_pixel(uint8_t *pixel,
@@ -69,7 +65,8 @@ static void render_server_apply_shadow_pass(uint8_t *destination,
                                             uint16_t rect_w,
                                             uint16_t rect_h,
                                             uint16_t spread,
-                                            uint8_t opacity)
+                                            uint8_t opacity,
+                                            uint32_t shadow_color)
 {
     if (destination == NULL || rect_w == 0 || rect_h == 0 || spread == 0 || opacity == 0) {
         return;
@@ -90,9 +87,14 @@ static void render_server_apply_shadow_pass(uint8_t *destination,
     const int32_t inner_right = rect_x + (int32_t)rect_w;
     const int32_t inner_bottom = rect_y + (int32_t)rect_h;
 
-    const uint8_t shadow_blue = 17;
-    const uint8_t shadow_green = 15;
-    const uint8_t shadow_red = 14;
+    const uint8_t color_alpha = (uint8_t)((shadow_color >> 24) & 0xFFu);
+    const uint8_t shadow_red = (uint8_t)((shadow_color >> 16) & 0xFFu);
+    const uint8_t shadow_green = (uint8_t)((shadow_color >> 8) & 0xFFu);
+    const uint8_t shadow_blue = (uint8_t)(shadow_color & 0xFFu);
+    const uint32_t max_alpha = ((uint32_t)opacity * (uint32_t)color_alpha) / 255u;
+    if (max_alpha == 0) {
+        return;
+    }
 
     for (int32_t y = y0; y < y1; ++y) {
         uint8_t *row = destination + ((size_t)y * destination_stride);
@@ -123,7 +125,7 @@ static void render_server_apply_shadow_pass(uint8_t *destination,
             }
 
             double falloff = 1.0 - (distance / (double)spread);
-            uint8_t alpha = (uint8_t)((double)opacity * falloff * falloff);
+            uint8_t alpha = (uint8_t)((double)max_alpha * falloff * falloff);
             if (alpha == 0) {
                 continue;
             }
@@ -141,24 +143,27 @@ static void render_server_apply_window_shadow(uint8_t *destination,
                                              size_t destination_stride,
                                              uint32_t buffer_width,
                                              uint32_t buffer_height,
+                                             const RenderServerShadow *shadow,
                                              int32_t x,
                                              int32_t y,
                                              uint16_t w,
                                              uint16_t h)
 {
-    for (size_t i = 0; i < sizeof(k_render_server_shadow_passes) / sizeof(k_render_server_shadow_passes[0]); ++i) {
-        const RenderServerShadowPass *pass = &k_render_server_shadow_passes[i];
-        render_server_apply_shadow_pass(destination,
-                                        destination_stride,
-                                        buffer_width,
-                                        buffer_height,
-                                        x + pass->x_offset,
-                                        y + pass->y_offset,
-                                        w,
-                                        h,
-                                        pass->spread,
-                                        pass->opacity);
+    if (shadow == NULL || !shadow->enabled) {
+        return;
     }
+
+    render_server_apply_shadow_pass(destination,
+                                    destination_stride,
+                                    buffer_width,
+                                    buffer_height,
+                                    x + shadow->x_offset,
+                                    y + shadow->y_offset,
+                                    w,
+                                    h,
+                                    shadow->spread,
+                                    shadow->opacity,
+                                    shadow->color);
 }
 
 static void render_server_unpack_argb(uint32_t argb,
@@ -178,65 +183,6 @@ static void render_server_unpack_argb(uint32_t argb,
     }
     if (blue != NULL) {
         *blue = (CGFloat)(argb & 0xFFu) / 255.0;
-    }
-}
-
-static bool render_server_load_number_field(lua_State *L, int table_index, const char *name, uint32_t *dst)
-{
-    lua_getfield(L, table_index, name);
-    if (lua_isnumber(L, -1)) {
-        *dst = (uint32_t)lua_tointeger(L, -1);
-        lua_pop(L, 1);
-        return true;
-    }
-    lua_pop(L, 1);
-    return false;
-}
-
-static bool render_server_load_string_field(lua_State *L, int table_index, const char *name,
-                                            char *dst, size_t dst_len)
-{
-    lua_getfield(L, table_index, name);
-    if (lua_isstring(L, -1)) {
-        const char *src = lua_tostring(L, -1);
-        if (src != NULL && dst_len > 0) {
-            snprintf(dst, dst_len, "%s", src);
-        }
-        lua_pop(L, 1);
-        return true;
-    }
-    lua_pop(L, 1);
-    return false;
-}
-
-static void render_server_load_number_field_alias(lua_State *L,
-                                                  int table_index,
-                                                  const char *primary,
-                                                  const char *legacy,
-                                                  uint32_t *dst)
-{
-    if (render_server_load_number_field(L, table_index, primary, dst)) {
-        return;
-    }
-
-    if (legacy != NULL) {
-        (void)render_server_load_number_field(L, table_index, legacy, dst);
-    }
-}
-
-static void render_server_load_string_field_alias(lua_State *L,
-                                                  int table_index,
-                                                  const char *primary,
-                                                  const char *legacy,
-                                                  char *dst,
-                                                  size_t dst_len)
-{
-    if (render_server_load_string_field(L, table_index, primary, dst, dst_len)) {
-        return;
-    }
-
-    if (legacy != NULL) {
-        (void)render_server_load_string_field(L, table_index, legacy, dst, dst_len);
     }
 }
 
@@ -271,65 +217,64 @@ static CGImageRef render_server_load_image_from_path(const char *path)
     return image;
 }
 
-static bool render_server_load_backdrop_config(const char *config_path, RenderServerBackdrop *backdrop)
+static void render_server_set_default_shadow(RenderServerShadow *shadow)
 {
-    if (backdrop == NULL) {
+    if (shadow == NULL) {
+        return;
+    }
+
+    shadow->enabled = true;
+    shadow->x_offset = 0;
+    shadow->y_offset = 0;
+    shadow->spread = 28;
+    shadow->opacity = 52;
+    shadow->color = 0xFF0E0F11u;
+}
+
+static bool render_server_load_compositor_config(const char *config_path,
+                                                 RenderServerCompositor *compositor)
+{
+    if (compositor == NULL) {
         return false;
     }
 
-    backdrop->background_color = 0xFFFFFFFFu;
-    backdrop->background_image = NULL;
+    compositor->backdrop.background_color = 0xFFFFFFFFu;
+    compositor->backdrop.background_image = NULL;
+    render_server_set_default_shadow(&compositor->shadow);
 
-    if (config_path == NULL || *config_path == '\0') {
+    ApplicatorLuaConfig config;
+    applicator_lua_config_init(&config);
+    if (!applicator_lua_config_load_file(config_path, &config, "[RenderServer]")) {
         return true;
     }
 
-    lua_State *L = luaL_newstate();
-    if (L == NULL) {
-        fprintf(stderr, "[RenderServer] warning: could not allocate Lua state for %s\n", config_path);
-        return true;
+    if (config.has_background_color) {
+        compositor->backdrop.background_color = config.background_color;
+    }
+    if (config.has_shadow_enabled) {
+        compositor->shadow.enabled = config.shadow_enabled;
+    }
+    if (config.has_shadow_x_offset) {
+        compositor->shadow.x_offset = config.shadow_x_offset;
+    }
+    if (config.has_shadow_y_offset) {
+        compositor->shadow.y_offset = config.shadow_y_offset;
+    }
+    if (config.has_shadow_spread) {
+        compositor->shadow.spread = config.shadow_spread;
+    }
+    if (config.has_shadow_opacity) {
+        compositor->shadow.opacity = config.shadow_opacity;
+    }
+    if (config.has_shadow_color) {
+        compositor->shadow.color = config.shadow_color;
     }
 
-    luaL_openlibs(L);
-
-    if (luaL_loadfile(L, config_path) != LUA_OK) {
-        fprintf(stderr, "[RenderServer] warning: could not load background config %s: %s\n",
-                config_path,
-                lua_tostring(L, -1));
-        lua_close(L);
-        return true;
-    }
-
-    if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
-        fprintf(stderr, "[RenderServer] warning: background config %s failed: %s\n",
-                config_path,
-                lua_tostring(L, -1));
-        lua_close(L);
-        return true;
-    }
-
-    if (!lua_istable(L, -1)) {
-        fprintf(stderr, "[RenderServer] warning: background config %s did not return a table\n",
-                config_path);
-        lua_close(L);
-        return true;
-    }
-
-    render_server_load_number_field_alias(L, -1, "background_color", "root_color",
-                                          &backdrop->background_color);
-
-    char image_path[PATH_MAX];
-    memset(image_path, 0, sizeof(image_path));
-    render_server_load_string_field_alias(L, -1, "background_image", "root_image",
-                                          image_path, sizeof(image_path));
-
-    lua_close(L);
-
-    if (image_path[0] != '\0') {
-        backdrop->background_image = render_server_load_image_from_path(image_path);
-        if (backdrop->background_image == NULL) {
+    if (config.has_background_image && config.background_image[0] != '\0') {
+        compositor->backdrop.background_image = render_server_load_image_from_path(config.background_image);
+        if (compositor->backdrop.background_image == NULL) {
             fprintf(stderr, "[RenderServer] warning: could not load background image %s\n",
-                    image_path);
+                    config.background_image);
         }
     }
 
@@ -355,7 +300,7 @@ RenderServerCompositor *render_server_compositor_create(const char *config_path)
         return NULL;
     }
 
-    if (!render_server_load_backdrop_config(config_path, &compositor->backdrop)) {
+    if (!render_server_load_compositor_config(config_path, compositor)) {
         render_server_release_backdrop(&compositor->backdrop);
         free(compositor);
         return NULL;
@@ -584,6 +529,7 @@ int render_server_enable_composite(xcb_connection_t *connection,
 
 static bool render_server_compose_window(xcb_connection_t *connection,
                                          xcb_window_t window,
+                                         const RenderServerCompositor *compositor,
                                          CGContextRef ctx,
                                          uint8_t *destination,
                                          size_t destination_stride,
@@ -624,6 +570,7 @@ static bool render_server_compose_window(xcb_connection_t *connection,
                                           destination_stride,
                                           buffer_width,
                                           buffer_height,
+                                          compositor != NULL ? &compositor->shadow : NULL,
                                           rect.x,
                                           rect.y,
                                           rect.w,
@@ -730,6 +677,7 @@ int render_server_compose_frame(RenderState *state,
             for (int i = 0; i < child_count; ++i) {
                 (void)render_server_compose_window(connection,
                                                    children[i],
+                                                   compositor,
                                                    ctx,
                                                    destination,
                                                    destination_stride,

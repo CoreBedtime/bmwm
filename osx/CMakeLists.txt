@@ -34,6 +34,19 @@ endif()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 find_program(CODESIGN_EXECUTABLE codesign REQUIRED)
 
+add_library(ApplicatorConfig STATIC
+    Config/lua_config.c
+)
+
+target_include_directories(ApplicatorConfig PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/Config"
+    "${LUAJIT_INCLUDE_DIR}"
+)
+
+target_link_libraries(ApplicatorConfig PUBLIC
+    "${LUAJIT_LIBRARY}"
+)
+
 add_library(FramebufferLib STATIC
     FramebufferLib/api.m
     FramebufferLib/iomfb.m
@@ -68,14 +81,13 @@ target_include_directories(LibRenderServer PUBLIC
 target_include_directories(LibRenderServer PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/FramebufferLib"
     "${XCB_INCLUDE_DIR}"
-    "${LUAJIT_INCLUDE_DIR}"
 )
 
 target_link_libraries(LibRenderServer PUBLIC
+    ApplicatorConfig
     FramebufferLib
     "${XCB_LIBRARY}"
     "${XCB_COMPOSITE_LIBRARY}"
-    "${LUAJIT_LIBRARY}"
 )
 
 set_target_properties(LibRenderServer PROPERTIES OUTPUT_NAME "RenderServer")
@@ -139,17 +151,16 @@ add_executable(bwm
 target_include_directories(bwm PRIVATE
     "${XCB_INCLUDE_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/WindowManager"
-    "${LUAJIT_INCLUDE_DIR}"
 )
 
 target_link_libraries(bwm PRIVATE
+    ApplicatorConfig
     "${XCB_LIBRARY}"
     "${XCB_XTEST_LIBRARY}"
     "${COREGRAPHICS_FRAMEWORK}"
     "${IMAGEIO_FRAMEWORK}"
     "${COREFOUNDATION_FRAMEWORK}"
     "${IOKIT_FRAMEWORK}"
-    "${LUAJIT_LIBRARY}"
 )
 
 set_target_properties(bwm PROPERTIES OUTPUT_NAME "bwm")

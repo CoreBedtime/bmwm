@@ -19,6 +19,8 @@ The current runtime flow is:
 
 Wallpaper rendering now lives in the render-server backdrop path. `background_image` is applied there, and `bwm` only applies the solid root color fallback.
 
+The shared `BWM_CONFIG` Lua file is API-based now. Instead of returning a table, it calls setters such as `background_image(...)`, `background_color(...)`, `titlebar_color(...)`, `titlebar_focus_color(...)`, and the compositor shadow setters (`shadow_enabled(...)`, `shadow_offset(...)`, `shadow_x_offset(...)`, `shadow_y_offset(...)`, `shadow_spread(...)`, `shadow_opacity(...)`, `shadow_color(...)`).
+
 This is still an active prototype. The X server bridge is intentionally minimal and is aimed at proving the IOMFB integration path, not providing a complete desktop environment.
 
 ## Building

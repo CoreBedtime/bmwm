@@ -1,8 +1,14 @@
 local source = debug.getinfo(1, "S").source
 local config_dir = source:match("^@(.*/)") or "./"
 
-return {
-    background_image = "/Volumes/Bedtime/Developer/Applicator/dev-config/wall.png",
-    titlebar_color = 0xFF2A2E34,
-    titlebar_focus_color = 0xFF3B82F6,
-}
+background_image(config_dir .. "wall.png")
+
+titlebar_color(0xFF2A2E34)
+titlebar_focus_color(0xFF3B82F6)
+
+shadow_enabled(true)
+shadow_x_offset(0)
+shadow_y_offset(0)
+shadow_spread(28)
+shadow_opacity(52)
+shadow_color(0xFF0E0F11)
