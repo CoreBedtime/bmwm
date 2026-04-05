@@ -27,7 +27,6 @@ static void bwm_set_default_config(BwmWM *wm)
     wm->config.root_color = 0xFFFFFFFF;
     wm->config.titlebar_color = BWM_COLOR_TITLE_BG;
     wm->config.titlebar_focus_color = BWM_COLOR_TITLE_FOCUS;
-    wm->config.root_image[0] = '\0';
 }
 
 /* -------------------------------------------------------------------------
@@ -96,6 +95,9 @@ int bwm_init(BwmWM *wm)
                       6, 6, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT,
                       wm->screen->root_visual, cursor_mask, cursor_vals);
     xcb_map_window(wm->conn, wm->cursor_win);
+    uint32_t cursor_stack = XCB_STACK_MODE_ABOVE;
+    xcb_configure_window(wm->conn, wm->cursor_win,
+                         XCB_CONFIG_WINDOW_STACK_MODE, &cursor_stack);
 
     xcb_flush(wm->conn);
 
@@ -118,13 +120,9 @@ void bwm_destroy(BwmWM *wm)
         free(c);
     }
     if (wm->conn != NULL && wm->root != XCB_NONE) {
-        if (wm->root_background != XCB_NONE) {
-            uint32_t pixel = wm->config.root_color;
-            xcb_change_window_attributes(wm->conn, wm->root, XCB_CW_BACK_PIXEL, &pixel);
-            xcb_clear_area(wm->conn, 0, wm->root, 0, 0, 0, 0);
-            xcb_free_pixmap(wm->conn, wm->root_background);
-            wm->root_background = XCB_NONE;
-        }
+        uint32_t pixel = wm->config.root_color;
+        xcb_change_window_attributes(wm->conn, wm->root, XCB_CW_BACK_PIXEL, &pixel);
+        xcb_clear_area(wm->conn, 0, wm->root, 0, 0, 0, 0);
     }
     if (wm->conn != NULL) {
         xcb_flush(wm->conn);

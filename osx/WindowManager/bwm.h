@@ -8,8 +8,6 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-#include <limits.h>
-
 #include <xcb/xcb.h>
 #include <xcb/xproto.h>
 #include <xcb/xtest.h>
@@ -38,7 +36,6 @@ struct BwmConfig {
     uint32_t root_color;
     uint32_t titlebar_color;
     uint32_t titlebar_focus_color;
-    char     root_image[PATH_MAX];
 };
 
 /* -------------------------------------------------------------------------
@@ -87,7 +84,6 @@ struct BwmWM {
     xcb_screen_t     *screen;
     xcb_window_t      root;
     xcb_window_t      cursor_win;
-    xcb_pixmap_t      root_background;
 
     /* atoms */
     xcb_atom_t atom_wm_delete_window;

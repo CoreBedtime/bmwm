@@ -429,9 +429,14 @@ static void render_server_draw_backdrop(CGContextRef ctx,
 
     if (backdrop != NULL && backdrop->background_image != NULL) {
         CGContextSetInterpolationQuality(ctx, kCGInterpolationHigh);
+        /* Draw the backdrop image with the same layer flip used for window pixmaps. */
+        CGContextSaveGState(ctx);
+        CGContextTranslateCTM(ctx, 0.0, (CGFloat)height);
+        CGContextScaleCTM(ctx, 1.0, -1.0);
         CGContextDrawImage(ctx,
                            CGRectMake(0.0, 0.0, (CGFloat)width, (CGFloat)height),
                            backdrop->background_image);
+        CGContextRestoreGState(ctx);
     }
 }
 
