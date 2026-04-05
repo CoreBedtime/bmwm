@@ -4,11 +4,12 @@ Applicator is a macOS-focused experiment around IOMFB-backed rendering, an X11 r
 
 ## Current State
 
-The repo currently builds three binaries:
+The repo currently builds four binaries:
 
 - `loader-macos`, which patches the runtime environment and launches `MainUserspace`
 - `MainUserspace`, which opens the local IOMFB display stack through `FramebufferLib`, creates IOSurfaces for presentation, and starts the local X server/render path
 - `bwm`, a standalone reparenting X11 window manager used when the external-WM path is enabled
+- `AppLaunch`, a Frida Core launcher that spawns a `.app` bundle executable and injects it before resume
 
 The current runtime flow is:
 
@@ -39,6 +40,8 @@ sudo port install xorg-libXcomposite
 sudo port install luajit
 ```
 
+To build `AppLaunch`, CMake will use `FRIDA_CORE_DEVKIT_ROOT` if you point it at an unpacked Frida devkit. Otherwise it downloads `frida-core-devkit-${FRIDA_CORE_VERSION}-${FRIDA_CORE_PLATFORM}.tar.xz` from the GitHub Frida releases page. You can override `FRIDA_CORE_VERSION` and `FRIDA_CORE_PLATFORM` from the CMake cache if you need a different release or architecture.
+
 ## Runtime Dependencies
 
 The current render-server bridge expects these X11 tools to be available locally:
@@ -56,6 +59,7 @@ These binaries come from the XQuartz package, not MacPorts. The code uses them t
 - `./scripts/start-bwm.sh` starts the loader with `RENDER_SERVER_EXTERNAL_WM=1`, then launches `bwm`
 - `./scripts/start-thunar-bwm.sh` starts the loader with `RENDER_SERVER_EXTERNAL_WM=1`, then launches `bwm` and Thunar
 - `./scripts/start-thunar-xterm-bwm.sh` starts the loader with `RENDER_SERVER_EXTERNAL_WM=1`, then launches `bwm`, Thunar, and xterm
+- `./.build/ninja/osx/AppLaunch /path/to/App.app [app-args...]` launches the app bundle executable and injects it with Frida before resume
 
 ## License
 
