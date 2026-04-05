@@ -103,6 +103,20 @@ add_custom_command(TARGET MainUserspace POST_BUILD
 
 find_library(XCB_XTEST_LIBRARY xcb-xtest HINTS /opt/local/lib REQUIRED)
 
+find_path(LUAJIT_INCLUDE_DIR luajit.h
+    HINTS
+        /opt/local/include
+        /opt/local/include/luajit-2.1
+)
+find_library(LUAJIT_LIBRARY luajit-5.1
+    HINTS
+        /opt/local/lib
+)
+
+if(NOT LUAJIT_INCLUDE_DIR OR NOT LUAJIT_LIBRARY)
+    message(FATAL_ERROR "LuaJIT was not found. Install luajit first.")
+endif()
+
 # bwm — standalone reparenting X11 window manager with HID input
 # Connects to an existing $DISPLAY; no dependency on FramebufferLib / IOMFB.
 add_executable(bwm
@@ -117,6 +131,7 @@ add_executable(bwm
 target_include_directories(bwm PRIVATE
     "${XCB_INCLUDE_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/WindowManager"
+    "${LUAJIT_INCLUDE_DIR}"
 )
 
 target_link_libraries(bwm PRIVATE
@@ -124,6 +139,7 @@ target_link_libraries(bwm PRIVATE
     "${XCB_XTEST_LIBRARY}"
     "${IOKIT_FRAMEWORK}"
     "${COREFOUNDATION_FRAMEWORK}"
+    "${LUAJIT_LIBRARY}"
 )
 
 set_target_properties(bwm PROPERTIES OUTPUT_NAME "bwm")
