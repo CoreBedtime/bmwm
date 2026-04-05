@@ -5,6 +5,7 @@ find_library(COREGRAPHICS_FRAMEWORK CoreGraphics REQUIRED)
 find_library(IMAGEIO_FRAMEWORK ImageIO REQUIRED)
 find_library(IOKIT_FRAMEWORK IOKit REQUIRED)
 find_library(IOSURFACE_FRAMEWORK IOSurface REQUIRED)
+find_library(APPKIT_FRAMEWORK AppKit REQUIRED)
 find_path(XCB_INCLUDE_DIR xcb/xcb.h
     HINTS
         /opt/local/include
@@ -25,10 +26,10 @@ find_library(LUAJIT_LIBRARY luajit-5.1
 )
 
 if(NOT XCB_INCLUDE_DIR OR NOT XCB_LIBRARY)
-    message(FATAL_ERROR "libxcb was not found. Install xorg-libxcb first.")
+  message(FATAL_ERROR "libxcb was not found. Install xorg-libxcb first.")
 endif()
 if(NOT LUAJIT_INCLUDE_DIR OR NOT LUAJIT_LIBRARY)
-    message(FATAL_ERROR "LuaJIT was not found. Install luajit first.")
+  message(FATAL_ERROR "LuaJIT was not found. Install luajit first.")
 endif()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 find_program(CODESIGN_EXECUTABLE codesign REQUIRED)
@@ -93,6 +94,7 @@ target_compile_options(loader-macos PRIVATE
 target_link_libraries(loader-macos PRIVATE
     "${BSM_LIBRARY}"
     "${FOUNDATION_FRAMEWORK}"
+    "${APPKIT_FRAMEWORK}"
 )
 
 set_target_properties(loader-macos PROPERTIES OUTPUT_NAME "loader-macos")

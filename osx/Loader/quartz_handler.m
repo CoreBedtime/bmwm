@@ -10,6 +10,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#import <AppKit/AppKit.h>
+
 #define IMFB_PATH \
     "/System/Library/PrivateFrameworks/IOMobileFramebuffer.framework/IOMobileFramebuffer"
 
@@ -407,7 +409,12 @@ void windowserver_HALT(bool cont) {
         }
 
         remove_hid_trampoline(task);
+
+        [NSCursor unhide];
+
     } else {
+        [NSCursor hide];
+
         /* ── patch IMFB swaps to no-ops ── */
         for (int i = 0; i < PATCH_COUNT; i++) {
             if (read_remote(task, addrs[i], saved_originals[i],

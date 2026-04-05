@@ -11,8 +11,8 @@
  *   - Scroll wheel (usage GD_Wheel / GD_Z) produces Button 4/5.
  *
  * Keyboard:
- *   - HID key-codes are mapped to X11 key-codes (HID + 8, the standard
- *     offset used by XKB for USB HID keyboards).
+ *   - HID key usages are translated directly into the X11/XKB core
+ *     keycodes expected by the Xorg/XQuartz server.
  *   - KeyPress / KeyRelease events are injected with detail = keycode.
  *
  * The IOHIDManager runs on a dedicated CFRunLoop thread.  Fake-input
@@ -60,6 +60,154 @@ static float clampf(float v, float lo, float hi)
     if (v > hi) return hi;
     return v;
 }
+
+#define HID_TO_X11_KEYCODE(hid_usage, x11_keycode) \
+    case hid_usage: return (uint8_t)(x11_keycode)
+
+static uint8_t hid_usage_to_x11_keycode(uint32_t usage)
+{
+    /*
+     * This server is started without a keyboard device, so XTest input must use
+     * the server's core keycodes, not Carbon virtual keycodes. The values below
+     * match the installed XKB tables on macOS:
+     *   - /opt/X11/share/X11/xkb/keycodes/xfree86
+     *   - /opt/X11/share/X11/xkb/keycodes/macintosh
+     */
+    switch (usage) {
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardA, 38);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardB, 56);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardC, 54);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardD, 40);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardE, 26);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardF, 41);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardG, 42);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardH, 43);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardI, 31);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardJ, 44);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardK, 45);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardL, 46);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardM, 58);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardN, 57);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardO, 32);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardP, 33);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardQ, 24);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardR, 27);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardS, 39);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardT, 28);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardU, 30);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardV, 55);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardW, 25);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardX, 53);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardY, 29);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardZ, 52);
+
+        HID_TO_X11_KEYCODE(kHIDUsage_Keyboard1, 10);
+        HID_TO_X11_KEYCODE(kHIDUsage_Keyboard2, 11);
+        HID_TO_X11_KEYCODE(kHIDUsage_Keyboard3, 12);
+        HID_TO_X11_KEYCODE(kHIDUsage_Keyboard4, 13);
+        HID_TO_X11_KEYCODE(kHIDUsage_Keyboard5, 14);
+        HID_TO_X11_KEYCODE(kHIDUsage_Keyboard6, 15);
+        HID_TO_X11_KEYCODE(kHIDUsage_Keyboard7, 16);
+        HID_TO_X11_KEYCODE(kHIDUsage_Keyboard8, 17);
+        HID_TO_X11_KEYCODE(kHIDUsage_Keyboard9, 18);
+        HID_TO_X11_KEYCODE(kHIDUsage_Keyboard0, 19);
+
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardReturnOrEnter, 36);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardEscape, 9);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardDeleteOrBackspace, 22);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardTab, 23);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardSpacebar, 65);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardHyphen, 20);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardEqualSign, 21);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardOpenBracket, 34);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardCloseBracket, 35);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardBackslash, 51);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardNonUSBackslash, 94);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardNonUSPound, 94);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardSemicolon, 47);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardQuote, 48);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardGraveAccentAndTilde, 49);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardComma, 59);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardPeriod, 60);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardSlash, 61);
+
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardCapsLock, 66);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardF1, 67);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardF2, 68);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardF3, 69);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardF4, 70);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardF5, 71);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardF6, 72);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardF7, 73);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardF8, 74);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardF9, 75);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardF10, 76);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardF11, 95);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardF12, 96);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardF13, 182);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardF14, 183);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardF15, 184);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardF16, 121);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardF17, 122);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardF18, 129);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardF19, 130);
+
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardPrintScreen, 111);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardScrollLock, 78);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardPause, 110);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardInsert, 106);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardHome, 97);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardPageUp, 99);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardDeleteForward, 107);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardEnd, 103);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardPageDown, 105);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardRightArrow, 102);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardLeftArrow, 100);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardDownArrow, 104);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardUpArrow, 98);
+
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardLeftControl, 37);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardLeftShift, 50);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardLeftAlt, 64);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardLeftGUI, 115);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardRightControl, 109);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardRightShift, 62);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardRightAlt, 113);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardRightGUI, 116);
+
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardApplication, 117);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardMenu, 117);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardHelp, 144);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardMute, 141);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardVolumeDown, 142);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeyboardVolumeUp, 143);
+
+        HID_TO_X11_KEYCODE(kHIDUsage_KeypadNumLock, 77);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeypadSlash, 112);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeypadAsterisk, 63);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeypadHyphen, 82);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeypadPlus, 86);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeypadEnter, 108);
+        HID_TO_X11_KEYCODE(kHIDUsage_Keypad1, 87);
+        HID_TO_X11_KEYCODE(kHIDUsage_Keypad2, 88);
+        HID_TO_X11_KEYCODE(kHIDUsage_Keypad3, 89);
+        HID_TO_X11_KEYCODE(kHIDUsage_Keypad4, 83);
+        HID_TO_X11_KEYCODE(kHIDUsage_Keypad5, 84);
+        HID_TO_X11_KEYCODE(kHIDUsage_Keypad6, 85);
+        HID_TO_X11_KEYCODE(kHIDUsage_Keypad7, 79);
+        HID_TO_X11_KEYCODE(kHIDUsage_Keypad8, 80);
+        HID_TO_X11_KEYCODE(kHIDUsage_Keypad9, 81);
+        HID_TO_X11_KEYCODE(kHIDUsage_Keypad0, 90);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeypadPeriod, 91);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeypadComma, 123);
+        HID_TO_X11_KEYCODE(kHIDUsage_KeypadEqualSign, 157);
+
+        default:
+            return 0;
+    }
+}
+
+#undef HID_TO_X11_KEYCODE
 
 /* Inject an absolute MotionNotify at the current logical cursor position. */
 static void inject_motion(BwmWM *wm)
@@ -173,13 +321,12 @@ static void keyboard_value_callback(void           *context,
     // printf("[bwm/input] mouse usage=%u int_val=%ld\n", usage, int_val);
 
     if (usage_page != kHIDPage_KeyboardOrKeypad) return;
-    if (usage < 4 || usage > 231) return;  /* skip reserved / modifier-only */
 
-    /*
-     * X11 key-code = HID usage + 8
-     * This is the standard mapping used by XKB for USB HID keyboards.
-     */
-    uint8_t keycode = (uint8_t)(usage + 8);
+    uint8_t keycode = hid_usage_to_x11_keycode(usage);
+    if (keycode == 0) {
+        return;
+    }
+
     uint8_t type    = (int_val != 0) ? XCB_KEY_PRESS : XCB_KEY_RELEASE;
 
     xcb_test_fake_input(wm->conn, type, keycode, XCB_CURRENT_TIME,
