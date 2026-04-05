@@ -26,6 +26,7 @@ Requires CMake, Ninja, and the Xcode command line tools.
 sudo port install cmake
 sudo port install ninja
 sudo port install xorg-libxcb
+sudo port install xorg-libXcomposite
 sudo port install luajit
 ```
 

@@ -67,16 +67,19 @@ static void unpack_argb(uint32_t argb, uint8_t *a, uint8_t *r, uint8_t *g, uint8
     if (b != NULL) *b = (uint8_t)(argb & 0xFFu);
 }
 
-static void load_number_field(lua_State *L, int table_index, const char *name, uint32_t *dst)
+static bool load_number_field(lua_State *L, int table_index, const char *name, uint32_t *dst)
 {
     lua_getfield(L, table_index, name);
     if (lua_isnumber(L, -1)) {
         *dst = (uint32_t)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+        return true;
     }
     lua_pop(L, 1);
+    return false;
 }
 
-static void load_string_field(lua_State *L, int table_index, const char *name,
+static bool load_string_field(lua_State *L, int table_index, const char *name,
                               char *dst, size_t dst_len)
 {
     lua_getfield(L, table_index, name);
@@ -85,14 +88,49 @@ static void load_string_field(lua_State *L, int table_index, const char *name,
         if (src != NULL && dst_len > 0) {
             snprintf(dst, dst_len, "%s", src);
         }
+        lua_pop(L, 1);
+        return true;
     }
     lua_pop(L, 1);
+    return false;
+}
+
+static void load_number_field_alias(lua_State *L,
+                                    int table_index,
+                                    const char *primary,
+                                    const char *legacy,
+                                    uint32_t *dst)
+{
+    if (load_number_field(L, table_index, primary, dst)) {
+        return;
+    }
+
+    if (legacy != NULL) {
+        (void)load_number_field(L, table_index, legacy, dst);
+    }
+}
+
+static void load_string_field_alias(lua_State *L,
+                                    int table_index,
+                                    const char *primary,
+                                    const char *legacy,
+                                    char *dst,
+                                    size_t dst_len)
+{
+    if (load_string_field(L, table_index, primary, dst, dst_len)) {
+        return;
+    }
+
+    if (legacy != NULL) {
+        (void)load_string_field(L, table_index, legacy, dst, dst_len);
+    }
 }
 
 static void load_config_table(lua_State *L, BwmWM *wm)
 {
-    load_number_field(L, -1, "root_color", &wm->config.root_color);
-    load_string_field(L, -1, "root_image", wm->config.root_image, sizeof(wm->config.root_image));
+    load_number_field_alias(L, -1, "background_color", "root_color", &wm->config.root_color);
+    load_string_field_alias(L, -1, "background_image", "root_image",
+                            wm->config.root_image, sizeof(wm->config.root_image));
     load_number_field(L, -1, "titlebar_color", &wm->config.titlebar_color);
     load_number_field(L, -1, "titlebar_focus_color", &wm->config.titlebar_focus_color);
 }

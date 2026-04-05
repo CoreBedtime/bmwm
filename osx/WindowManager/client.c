@@ -87,7 +87,6 @@ void bwm_redraw_titlebar(BwmWM *wm, BwmClient *c)
     xcb_gcontext_t gc = make_gc(wm, bg);
     fill_rect(wm, c->titlebar, gc, 0, 0, c->client_w, BWM_TITLEBAR_HEIGHT);
     xcb_free_gc(wm->conn, gc);
-    xcb_flush(wm->conn);
 }
 
 /* -------------------------------------------------------------------------
@@ -97,10 +96,12 @@ void bwm_redraw_titlebar(BwmWM *wm, BwmClient *c)
 void bwm_move_frame(BwmWM *wm, BwmClient *c, int16_t x, int16_t y)
 {
     c->x = x; c->y = y;
+    c->pending_x = x;
+    c->pending_y = y;
+    c->move_pending = false;
     uint32_t vals[] = { (uint32_t)x, (uint32_t)y };
     xcb_configure_window(wm->conn, c->frame,
                          XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, vals);
-    xcb_flush(wm->conn);
 }
 
 void bwm_resize_frame(BwmWM *wm, BwmClient *c, uint16_t cw, uint16_t ch)
@@ -110,6 +111,9 @@ void bwm_resize_frame(BwmWM *wm, BwmClient *c, uint16_t cw, uint16_t ch)
 
     c->client_w = cw; c->client_h = ch;
     c->w = bwm_frame_w(cw); c->h = bwm_frame_h(ch);
+    c->pending_x = c->x;
+    c->pending_y = c->y;
+    c->move_pending = false;
 
     uint32_t fv[] = { c->w, c->h };
     xcb_configure_window(wm->conn, c->frame,
@@ -123,7 +127,6 @@ void bwm_resize_frame(BwmWM *wm, BwmClient *c, uint16_t cw, uint16_t ch)
     xcb_configure_window(wm->conn, c->client,
                          XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, cv);
 
-    xcb_flush(wm->conn);
     bwm_redraw_titlebar(wm, c);
 }
 
@@ -184,6 +187,15 @@ void bwm_close_client(BwmWM *wm, BwmClient *c)
     xcb_flush(wm->conn);
 }
 
+void bwm_commit_motion_updates(BwmWM *wm)
+{
+    for (BwmClient *c = wm->clients; c; c = c->next) {
+        if (!c->move_pending) continue;
+        c->move_pending = false;
+        bwm_move_frame(wm, c, c->pending_x, c->pending_y);
+    }
+}
+
 /* -------------------------------------------------------------------------
  * Frame / unframe
  * ---------------------------------------------------------------------- */
@@ -210,6 +222,8 @@ BwmClient *bwm_frame_window(BwmWM *wm, xcb_window_t client_win, bool already_map
     c->x        = cx; c->y = cy;
     c->client_w = cw; c->client_h = ch;
     c->w        = bwm_frame_w(cw); c->h = bwm_frame_h(ch);
+    c->pending_x = c->x;
+    c->pending_y = c->y;
 
     /* frame */
     c->frame = xcb_generate_id(wm->conn);

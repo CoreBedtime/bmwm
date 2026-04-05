@@ -1067,7 +1067,7 @@ static IOMobileFramebufferReturn imfb_present_one(IMFBApi               *api,
         api->SwapSetTimestamp(display, mach_absolute_time());
 
     if (api->SwapSetBackgroundColor)
-        api->SwapSetBackgroundColor(display, 0.0f, 0.0f, 0.0f);
+        api->SwapSetBackgroundColor(display, 1.0f, 1.0f, 1.0f);
 
     IOMobileFramebufferReturn lr =
         api->SwapSetLayer(display, 0, surface, source_frame, dest_frame, 512);

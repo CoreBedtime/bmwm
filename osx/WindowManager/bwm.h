@@ -70,6 +70,10 @@ struct BwmClient {
     int16_t  drag_frame_x;
     int16_t  drag_frame_y;
 
+    bool     move_pending;
+    int16_t  pending_x;
+    int16_t  pending_y;
+
     BwmClient *next;
 };
 
@@ -131,6 +135,7 @@ void       bwm_move_frame(BwmWM *wm, BwmClient *c, int16_t x, int16_t y);
 void       bwm_resize_frame(BwmWM *wm, BwmClient *c, uint16_t cw, uint16_t ch);
 void       bwm_toggle_maximise(BwmWM *wm, BwmClient *c);
 void       bwm_close_client(BwmWM *wm, BwmClient *c);
+void       bwm_commit_motion_updates(BwmWM *wm);
 
 void       bwm_adopt_existing_windows(BwmWM *wm);
 

@@ -117,6 +117,9 @@ static void on_button_press(BwmWM *wm, const xcb_button_press_event_t *ev)
         tc->drag_ptr_y   = ev->root_y;
         tc->drag_frame_x = tc->x;
         tc->drag_frame_y = tc->y;
+        tc->pending_x    = tc->x;
+        tc->pending_y    = tc->y;
+        tc->move_pending = false;
         xcb_grab_pointer(wm->conn, 0, wm->root,
                          XCB_EVENT_MASK_BUTTON_RELEASE | XCB_EVENT_MASK_POINTER_MOTION,
                          XCB_GRAB_MODE_ASYNC, XCB_GRAB_MODE_ASYNC,
@@ -149,7 +152,9 @@ static void on_motion_notify(BwmWM *wm, const xcb_motion_notify_event_t *ev)
         if (!c->dragging) continue;
         int16_t nx = (int16_t)(c->drag_frame_x + (ev->root_x - c->drag_ptr_x));
         int16_t ny = (int16_t)(c->drag_frame_y + (ev->root_y - c->drag_ptr_y));
-        bwm_move_frame(wm, c, nx, ny);
+        c->pending_x = nx;
+        c->pending_y = ny;
+        c->move_pending = true;
         break;
     }
 }
@@ -221,6 +226,9 @@ int bwm_run(BwmWM *wm)
             }
             free(ev);
         }
+
+        bwm_commit_motion_updates(wm);
+        xcb_flush(wm->conn);
 
         if (xcb_connection_has_error(wm->conn)) {
             fprintf(stderr, "[bwm] X11 connection error\n");

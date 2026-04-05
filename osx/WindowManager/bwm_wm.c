@@ -24,7 +24,7 @@ static xcb_atom_t bwm_intern_atom(xcb_connection_t *conn, const char *name)
 
 static void bwm_set_default_config(BwmWM *wm)
 {
-    wm->config.root_color = BWM_COLOR_FRAME_BG;
+    wm->config.root_color = 0xFFFFFFFF;
     wm->config.titlebar_color = BWM_COLOR_TITLE_BG;
     wm->config.titlebar_focus_color = BWM_COLOR_TITLE_FOCUS;
     wm->config.root_image[0] = '\0';

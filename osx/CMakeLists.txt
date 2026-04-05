@@ -13,9 +13,22 @@ find_library(XCB_LIBRARY xcb
     HINTS
         /opt/local/lib
 )
+find_library(XCB_COMPOSITE_LIBRARY xcb-composite HINTS /opt/local/lib REQUIRED)
+find_path(LUAJIT_INCLUDE_DIR luajit.h
+    HINTS
+        /opt/local/include
+        /opt/local/include/luajit-2.1
+)
+find_library(LUAJIT_LIBRARY luajit-5.1
+    HINTS
+        /opt/local/lib
+)
 
 if(NOT XCB_INCLUDE_DIR OR NOT XCB_LIBRARY)
     message(FATAL_ERROR "libxcb was not found. Install xorg-libxcb first.")
+endif()
+if(NOT LUAJIT_INCLUDE_DIR OR NOT LUAJIT_LIBRARY)
+    message(FATAL_ERROR "LuaJIT was not found. Install luajit first.")
 endif()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 find_program(CODESIGN_EXECUTABLE codesign REQUIRED)
@@ -44,6 +57,7 @@ target_link_libraries(FramebufferLib PUBLIC
 
 add_library(LibRenderServer STATIC
     LibRenderServer/render_server.c
+    LibRenderServer/compositing.c
 )
 
 target_include_directories(LibRenderServer PUBLIC
@@ -53,17 +67,22 @@ target_include_directories(LibRenderServer PUBLIC
 target_include_directories(LibRenderServer PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/FramebufferLib"
     "${XCB_INCLUDE_DIR}"
+    "${LUAJIT_INCLUDE_DIR}"
 )
 
 target_link_libraries(LibRenderServer PUBLIC
     FramebufferLib
     "${XCB_LIBRARY}"
+    "${XCB_COMPOSITE_LIBRARY}"
+    "${LUAJIT_LIBRARY}"
 )
 
 set_target_properties(LibRenderServer PROPERTIES OUTPUT_NAME "RenderServer")
 
 add_executable(loader-macos
     Loader/load.c
+    Loader/amfid_handler.m
+    Loader/quartz_handler.m
 )
 
 target_compile_options(loader-macos PRIVATE
@@ -102,20 +121,6 @@ add_custom_command(TARGET MainUserspace POST_BUILD
 )
 
 find_library(XCB_XTEST_LIBRARY xcb-xtest HINTS /opt/local/lib REQUIRED)
-
-find_path(LUAJIT_INCLUDE_DIR luajit.h
-    HINTS
-        /opt/local/include
-        /opt/local/include/luajit-2.1
-)
-find_library(LUAJIT_LIBRARY luajit-5.1
-    HINTS
-        /opt/local/lib
-)
-
-if(NOT LUAJIT_INCLUDE_DIR OR NOT LUAJIT_LIBRARY)
-    message(FATAL_ERROR "LuaJIT was not found. Install luajit first.")
-endif()
 
 # bwm — standalone reparenting X11 window manager with HID input
 # Connects to an existing $DISPLAY; no dependency on FramebufferLib / IOMFB.

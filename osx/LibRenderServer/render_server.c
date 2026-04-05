@@ -18,11 +18,12 @@
 #include <xcb/xcb.h>
 
 #include "iomfb.h"
+#include "compositing.h"
 
-#define RENDER_SERVER_FRAME_INTERVAL_MS 16
 #define RENDER_SERVER_MODEL_REFRESH_HZ 60
 #define RENDER_SERVER_DISPLAYFD 99
 #define RENDER_SERVER_MAX_PIXEL_CLOCK_MHZ 300.0
+#define RENDER_SERVER_DEFAULT_REFRESH_HZ 60
 
 typedef struct {
     xcb_connection_t *connection;
@@ -33,6 +34,8 @@ typedef struct {
     uint16_t          width;
     uint16_t          height;
     uint8_t           bits_per_pixel;
+    uint32_t          refresh_hz;
+    bool              composite_enabled;
     char              display_name[64];
     char              xorg_path[PATH_MAX];
     char              config_path[PATH_MAX];
@@ -53,49 +56,26 @@ static void render_server_install_signal_handlers(void)
     signal(SIGTERM, handle_shutdown_signal);
 }
 
-static void fill_checkerboard(uint8_t *buffer, size_t width, size_t height, size_t stride)
-{
-    const size_t tile_size = 64;
-
-    for (size_t y = 0; y < height; ++y) {
-        uint8_t *row = buffer + (y * stride);
-        for (size_t x = 0; x < width; ++x) {
-            bool white = (((x / tile_size) + (y / tile_size)) & 1) != 0;
-            uint8_t value = white ? 0xFF : 0x00;
-            uint8_t *pixel = row + (x * 4);
-            pixel[0] = value;
-            pixel[1] = value;
-            pixel[2] = value;
-            pixel[3] = 0xFF;
-        }
-    }
-}
-
-static int render_server_prepare_checkerboard(RenderState *state)
-{
-    ScreenprocBuffers buffers;
-    memset(&buffers, 0, sizeof(buffers));
-    screenproc_get_buffers(state, &buffers);
-
-    if (buffers.buffer0 == NULL || buffers.buffer1 == NULL || buffers.width == 0 || buffers.height == 0) {
-        fprintf(stderr, "[RenderServer] framebuffer buffers are unavailable\n");
-        return 1;
-    }
-
-    if ((size_t)buffers.stride < ((size_t)buffers.width * 4)) {
-        fprintf(stderr, "[RenderServer] framebuffer stride is too small\n");
-        return 1;
-    }
-
-    fill_checkerboard((uint8_t *)buffers.buffer0, buffers.width, buffers.height, buffers.stride);
-    fill_checkerboard((uint8_t *)buffers.buffer1, buffers.width, buffers.height, buffers.stride);
-    screenproc_render_frame(state);
-    return 0;
-}
-
 static bool render_server_file_is_executable(const char *path)
 {
     return path != NULL && access(path, X_OK) == 0;
+}
+
+static void render_server_add_ns(struct timespec *ts, int64_t ns)
+{
+    ts->tv_nsec += (long)(ns % 1000000000LL);
+    ts->tv_sec += (time_t)(ns / 1000000000LL);
+    if (ts->tv_nsec >= 1000000000L) {
+        ts->tv_nsec -= 1000000000L;
+        ts->tv_sec += 1;
+    }
+}
+
+static int64_t render_server_timespec_diff_ns(const struct timespec *a,
+                                              const struct timespec *b)
+{
+    return ((int64_t)a->tv_sec - (int64_t)b->tv_sec) * 1000000000LL +
+           ((int64_t)a->tv_nsec - (int64_t)b->tv_nsec);
 }
 
 static int render_server_find_xorg(char *path_out, size_t path_out_size)
@@ -829,66 +809,6 @@ static void render_server_drain_x11_events(XServerState *server)
     xcb_flush(server->connection);
 }
 
-static int render_server_blit_root_window(RenderState *state, XServerState *server)
-{
-    xcb_get_image_cookie_t cookie = xcb_get_image(server->connection,
-                                                  XCB_IMAGE_FORMAT_Z_PIXMAP,
-                                                  server->screen->root,
-                                                  0,
-                                                  0,
-                                                  server->width,
-                                                  server->height,
-                                                  UINT32_MAX);
-    xcb_get_image_reply_t *reply = xcb_get_image_reply(server->connection, cookie, NULL);
-    if (reply == NULL) {
-        fprintf(stderr, "[RenderServer] failed to capture the X11 root window\n");
-        return 1;
-    }
-
-    const uint8_t *source = xcb_get_image_data(reply);
-    int source_length = xcb_get_image_data_length(reply);
-    size_t source_stride = (size_t)server->width * 4;
-    size_t required_bytes = source_stride * (size_t)server->height;
-    if (source == NULL || source_length < 0 || (size_t)source_length < required_bytes) {
-        free(reply);
-        fprintf(stderr, "[RenderServer] captured X11 frame was incomplete\n");
-        return 1;
-    }
-
-    IOSurfaceRef back_surface = state->surfaces[state->backIdx];
-    if (back_surface == NULL) {
-        free(reply);
-        fprintf(stderr, "[RenderServer] back IOSurface is unavailable\n");
-        return 1;
-    }
-
-    IOSurfaceLock(back_surface, 0, NULL);
-    uint8_t *destination = (uint8_t *)IOSurfaceGetBaseAddress(back_surface);
-    size_t destination_stride = IOSurfaceGetBytesPerRow(back_surface);
-
-    if (destination == NULL || destination_stride < source_stride) {
-        IOSurfaceUnlock(back_surface, 0, NULL);
-        free(reply);
-        fprintf(stderr, "[RenderServer] back IOSurface layout is invalid\n");
-        return 1;
-    }
-
-    for (uint32_t y = 0; y < server->height; ++y) {
-        uint32_t *destination_row = (uint32_t *)(destination + (y * destination_stride));
-        const uint32_t *source_row = (const uint32_t *)(source + (y * source_stride));
-
-        for (uint32_t x = 0; x < server->width; ++x) {
-            destination_row[x] = source_row[x] | 0xFF000000u;
-        }
-    }
-
-    IOSurfaceUnlock(back_surface, 0, NULL);
-    free(reply);
-
-    screenproc_render_frame(state);
-    return 0;
-}
-
 static void render_server_stop_xorg(XServerState *server, bool keep_log)
 {
     if (server->connection != NULL) {
@@ -935,6 +855,8 @@ static int render_server_start_xorg(RenderState *state, XServerState *server)
 {
     memset(server, 0, sizeof(*server));
     server->xorg_pid = -1;
+    server->refresh_hz = RENDER_SERVER_DEFAULT_REFRESH_HZ;
+    server->composite_enabled = false;
 
     if (render_server_find_xorg(server->xorg_path, sizeof(server->xorg_path)) != 0) {
         return 1;
@@ -963,22 +885,33 @@ static int render_server_start_xorg(RenderState *state, XServerState *server)
         return 1;
     }
 
+    if (render_server_enable_composite(server->connection,
+                                        server->screen,
+                                        server->display_name,
+                                        &server->composite_enabled) != 0) {
+        fprintf(stderr, "[RenderServer] continuing with background-only compositing on %s\n",
+                server->display_name);
+    }
+
     if (setenv("DISPLAY", server->display_name, 1) != 0) {
         fprintf(stderr, "[RenderServer] failed to export DISPLAY=%s\n", server->display_name);
         return 1;
     }
 
     fprintf(stdout,
-            "[RenderServer] X server ready on %s at %ux%u\n",
+            "[RenderServer] X server ready on %s at %ux%u @ %uHz\n",
             server->display_name,
             server->width,
-            server->height);
+            server->height,
+            server->refresh_hz);
     fflush(stdout);
 
     return 0;
 }
 
-static int render_server_event_loop(RenderState *state, XServerState *server)
+static int render_server_event_loop(RenderState *state,
+                                    XServerState *server,
+                                    const RenderServerCompositor *compositor)
 {
     int x11_fd = xcb_get_file_descriptor(server->connection);
     if (x11_fd < 0) {
@@ -986,14 +919,41 @@ static int render_server_event_loop(RenderState *state, XServerState *server)
         return 1;
     }
 
+    uint32_t refresh_hz = server->refresh_hz;
+    if (refresh_hz == 0) {
+        refresh_hz = RENDER_SERVER_DEFAULT_REFRESH_HZ;
+    }
+    int64_t frame_interval_ns = 1000000000LL / (int64_t)refresh_hz;
+    if (frame_interval_ns <= 0) {
+        frame_interval_ns = 1000000000LL / RENDER_SERVER_DEFAULT_REFRESH_HZ;
+    }
+
+    struct timespec next_frame;
+    if (clock_gettime(CLOCK_MONOTONIC, &next_frame) != 0) {
+        fprintf(stderr, "[RenderServer] failed to read the monotonic clock: %s\n", strerror(errno));
+        return 1;
+    }
+    render_server_add_ns(&next_frame, frame_interval_ns);
+
     while (g_render_server_running) {
+        struct timespec now;
+        if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+            fprintf(stderr, "[RenderServer] failed to read the monotonic clock: %s\n", strerror(errno));
+            return 1;
+        }
+
+        int timeout_ms = (int)(render_server_timespec_diff_ns(&next_frame, &now) / 1000000LL);
+        if (timeout_ms < 0) {
+            timeout_ms = 0;
+        }
+
         struct pollfd fd = {
             .fd = x11_fd,
             .events = POLLIN,
             .revents = 0,
         };
 
-        int poll_result = poll(&fd, 1, RENDER_SERVER_FRAME_INTERVAL_MS);
+        int poll_result = poll(&fd, 1, timeout_ms);
         if (poll_result < 0) {
             if (errno == EINTR) {
                 continue;
@@ -1016,8 +976,25 @@ static int render_server_event_loop(RenderState *state, XServerState *server)
             return 1;
         }
 
-        if (render_server_blit_root_window(state, server) != 0) {
+        if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+            fprintf(stderr, "[RenderServer] failed to read the monotonic clock: %s\n", strerror(errno));
             return 1;
+        }
+
+        if (render_server_timespec_diff_ns(&now, &next_frame) >= 0) {
+            if (render_server_compose_frame(state,
+                                            server->connection,
+                                            server->screen,
+                                            compositor,
+                                            server->composite_enabled,
+                                            server->width,
+                                            server->height) != 0) {
+                return 1;
+            }
+
+            do {
+                render_server_add_ns(&next_frame, frame_interval_ns);
+            } while (render_server_timespec_diff_ns(&now, &next_frame) >= 0);
         }
     }
 
@@ -1032,10 +1009,19 @@ int render_server_run(void)
         return 1;
     }
 
+    const char *background_config_path = getenv("BWM_CONFIG");
+    RenderServerCompositor *compositor = render_server_compositor_create(background_config_path);
+    if (compositor == NULL) {
+        fprintf(stderr, "[RenderServer] failed to create the CoreGraphics compositor\n");
+        screenproc_destroy(state);
+        return 1;
+    }
+
     state->activeDisplays[0] = state->displayInfo;
     state->activeDisplayCount = 1;
 
-    if (render_server_prepare_checkerboard(state) != 0) {
+    if (render_server_prepare_initial_frame(state, compositor) != 0) {
+        render_server_compositor_destroy(compositor);
         screenproc_destroy(state);
         return 1;
     }
@@ -1052,11 +1038,12 @@ int render_server_run(void)
             fprintf(stderr, "[RenderServer] Xorg log preserved at %s\n", server.log_path);
         }
         render_server_stop_xorg(&server, keep_log);
+        render_server_compositor_destroy(compositor);
         screenproc_destroy(state);
         return 1;
     }
 
-    result = render_server_event_loop(state, &server);
+    result = render_server_event_loop(state, &server, compositor);
     if (result != 0) {
         keep_log = true;
         if (server.log_path[0] != '\0') {
@@ -1065,6 +1052,7 @@ int render_server_run(void)
     }
 
     render_server_stop_xorg(&server, keep_log);
+    render_server_compositor_destroy(compositor);
     screenproc_destroy(state);
     return result;
 }
