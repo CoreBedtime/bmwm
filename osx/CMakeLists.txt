@@ -122,6 +122,7 @@ endif()
 add_executable(bwm
     WindowManager/main.c
     WindowManager/bwm_wm.c
+    WindowManager/config.c
     WindowManager/client.c
     WindowManager/focus.c
     WindowManager/events.c
@@ -137,8 +138,10 @@ target_include_directories(bwm PRIVATE
 target_link_libraries(bwm PRIVATE
     "${XCB_LIBRARY}"
     "${XCB_XTEST_LIBRARY}"
-    "${IOKIT_FRAMEWORK}"
+    "${COREGRAPHICS_FRAMEWORK}"
+    "${IMAGEIO_FRAMEWORK}"
     "${COREFOUNDATION_FRAMEWORK}"
+    "${IOKIT_FRAMEWORK}"
     "${LUAJIT_LIBRARY}"
 )
 

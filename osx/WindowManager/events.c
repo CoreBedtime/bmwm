@@ -109,29 +109,6 @@ static void on_configure_request(BwmWM *wm, const xcb_configure_request_event_t 
 
 static void on_button_press(BwmWM *wm, const xcb_button_press_event_t *ev)
 {
-    BwmButton which = BWM_BTN_NONE;
-    BwmClient *bc   = bwm_find_by_button(wm, ev->event, &which);
-    if (bc != NULL) {
-        bwm_set_focus(wm, bc);
-        switch (which) {
-            case BWM_BTN_CLOSE:
-                bwm_close_client(wm, bc);
-                break;
-            case BWM_BTN_MINIMISE:
-                xcb_unmap_window(wm->conn, bc->frame);
-                bc->mapped = false;
-                if (wm->focused == bc) wm->focused = NULL;
-                xcb_flush(wm->conn);
-                break;
-            case BWM_BTN_MAXIMISE:
-                bwm_toggle_maximise(wm, bc);
-                break;
-            default:
-                break;
-        }
-        return;
-    }
-
     BwmClient *tc = bwm_find_by_titlebar(wm, ev->event);
     if (tc != NULL && ev->detail == XCB_BUTTON_INDEX_1) {
         bwm_set_focus(wm, tc);

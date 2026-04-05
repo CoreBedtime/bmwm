@@ -59,4 +59,4 @@ if [ -z "$DISPLAY_VALUE" ]; then
 fi
 
 printf 'start-bwm.sh: using DISPLAY=%s\n' "$DISPLAY_VALUE"
-DISPLAY="$DISPLAY_VALUE" exec "$BWM"
+BWM_CONFIG="${ROOT_DIR}/dev-config/bwm.lua" DISPLAY="$DISPLAY_VALUE" exec "$BWM"

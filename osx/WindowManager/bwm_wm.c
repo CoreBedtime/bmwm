@@ -22,6 +22,14 @@ static xcb_atom_t bwm_intern_atom(xcb_connection_t *conn, const char *name)
     return atom;
 }
 
+static void bwm_set_default_config(BwmWM *wm)
+{
+    wm->config.root_color = BWM_COLOR_FRAME_BG;
+    wm->config.titlebar_color = BWM_COLOR_TITLE_BG;
+    wm->config.titlebar_focus_color = BWM_COLOR_TITLE_FOCUS;
+    wm->config.root_image[0] = '\0';
+}
+
 /* -------------------------------------------------------------------------
  * Init / destroy
  * ---------------------------------------------------------------------- */
@@ -44,6 +52,7 @@ int bwm_init(BwmWM *wm)
     wm->root   = wm->screen->root;
     wm->root_w = wm->screen->width_in_pixels;
     wm->root_h = wm->screen->height_in_pixels;
+    bwm_set_default_config(wm);
 
     /* cursor starts centred */
     wm->cursor_x = wm->root_w * 0.5f;
@@ -75,6 +84,9 @@ int bwm_init(BwmWM *wm)
         xcb_set_selection_owner(wm->conn, wm->root, wm_s0, XCB_CURRENT_TIME);
     }
 
+    bwm_load_config(wm, getenv("BWM_CONFIG"));
+    bwm_apply_root_background(wm);
+
     /* Create a 6x6 red square cursor window */
     wm->cursor_win = xcb_generate_id(wm->conn);
     uint32_t cursor_mask = XCB_CW_BACK_PIXEL | XCB_CW_OVERRIDE_REDIRECT;
@@ -101,11 +113,18 @@ void bwm_destroy(BwmWM *wm)
         bwm_client_remove(wm, c);
         xcb_reparent_window(wm->conn, c->client, wm->root, c->x, c->y);
         xcb_map_window(wm->conn, c->client);
-        for (int b = 0; b < BWM_BTN_COUNT; ++b)
-            xcb_destroy_window(wm->conn, c->buttons[b]);
         xcb_destroy_window(wm->conn, c->titlebar);
         xcb_destroy_window(wm->conn, c->frame);
         free(c);
+    }
+    if (wm->conn != NULL && wm->root != XCB_NONE) {
+        if (wm->root_background != XCB_NONE) {
+            uint32_t pixel = wm->config.root_color;
+            xcb_change_window_attributes(wm->conn, wm->root, XCB_CW_BACK_PIXEL, &pixel);
+            xcb_clear_area(wm->conn, 0, wm->root, 0, 0, 0, 0);
+            xcb_free_pixmap(wm->conn, wm->root_background);
+            wm->root_background = XCB_NONE;
+        }
     }
     if (wm->conn != NULL) {
         xcb_flush(wm->conn);

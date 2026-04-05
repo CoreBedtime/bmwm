@@ -67,7 +67,7 @@ fi
 
 printf 'start-thunar-bwm.sh: using DISPLAY=%s\n' "$DISPLAY_VALUE"
 
-DISPLAY="$DISPLAY_VALUE" "$BWM" &
+BWM_CONFIG="${ROOT_DIR}/dev-config/bwm.lua" DISPLAY="$DISPLAY_VALUE" "$BWM" &
 BWM_PID=$!
 
 DISPLAY="$DISPLAY_VALUE" exec /opt/local/bin/thunar

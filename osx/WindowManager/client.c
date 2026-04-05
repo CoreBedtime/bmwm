@@ -47,19 +47,6 @@ BwmClient *bwm_find_by_client(BwmWM *wm, xcb_window_t w)
     return NULL;
 }
 
-BwmClient *bwm_find_by_button(BwmWM *wm, xcb_window_t w, BwmButton *which_out)
-{
-    for (BwmClient *c = wm->clients; c; c = c->next) {
-        for (int b = 0; b < BWM_BTN_COUNT; ++b) {
-            if (c->buttons[b] == w) {
-                if (which_out) *which_out = (BwmButton)b;
-                return c;
-            }
-        }
-    }
-    return NULL;
-}
-
 /* -------------------------------------------------------------------------
  * Geometry helpers
  * ---------------------------------------------------------------------- */
@@ -72,25 +59,6 @@ uint16_t bwm_frame_w(uint16_t client_w)
 uint16_t bwm_frame_h(uint16_t client_h)
 {
     return client_h + BWM_TITLEBAR_HEIGHT + 2 * BWM_BORDER_WIDTH;
-}
-
-/* Button x positions, right-aligned: close(0) max(2) min(1) from the right */
-int16_t bwm_btn_x(BwmClient *c, int b)
-{
-    int slot;
-    switch (b) {
-        case BWM_BTN_CLOSE:    slot = 0; break;
-        case BWM_BTN_MAXIMISE: slot = 1; break;
-        case BWM_BTN_MINIMISE: slot = 2; break;
-        default:               slot = b; break;
-    }
-    return (int16_t)(c->client_w - BWM_BTN_MARGIN
-                     - (slot + 1) * (BWM_BTN_SIZE + BWM_BTN_MARGIN));
-}
-
-int16_t bwm_btn_y(void)
-{
-    return (int16_t)((BWM_TITLEBAR_HEIGHT - BWM_BTN_SIZE) / 2);
 }
 
 /* -------------------------------------------------------------------------
@@ -115,21 +83,10 @@ static void fill_rect(BwmWM *wm, xcb_drawable_t d, xcb_gcontext_t gc,
 
 void bwm_redraw_titlebar(BwmWM *wm, BwmClient *c)
 {
-    uint32_t bg = c->focused ? BWM_COLOR_TITLE_FOCUS : BWM_COLOR_TITLE_BG;
+    uint32_t bg = c->focused ? wm->config.titlebar_focus_color : wm->config.titlebar_color;
     xcb_gcontext_t gc = make_gc(wm, bg);
     fill_rect(wm, c->titlebar, gc, 0, 0, c->client_w, BWM_TITLEBAR_HEIGHT);
     xcb_free_gc(wm->conn, gc);
-
-    static const uint32_t btn_colours[BWM_BTN_COUNT] = {
-        BWM_COLOR_BTN_CLOSE,
-        BWM_COLOR_BTN_MIN,
-        BWM_COLOR_BTN_MAX,
-    };
-    for (int b = 0; b < BWM_BTN_COUNT; ++b) {
-        xcb_gcontext_t bgc = make_gc(wm, btn_colours[b]);
-        fill_rect(wm, c->buttons[b], bgc, 0, 0, BWM_BTN_SIZE, BWM_BTN_SIZE);
-        xcb_free_gc(wm->conn, bgc);
-    }
     xcb_flush(wm->conn);
 }
 
@@ -161,12 +118,6 @@ void bwm_resize_frame(BwmWM *wm, BwmClient *c, uint16_t cw, uint16_t ch)
     uint32_t tv[] = { cw, (uint32_t)BWM_TITLEBAR_HEIGHT };
     xcb_configure_window(wm->conn, c->titlebar,
                          XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, tv);
-
-    for (int b = 0; b < BWM_BTN_COUNT; ++b) {
-        uint32_t bv[] = { (uint32_t)bwm_btn_x(c, b), (uint32_t)bwm_btn_y() };
-        xcb_configure_window(wm->conn, c->buttons[b],
-                             XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y, bv);
-    }
 
     uint32_t cv[] = { cw, ch };
     xcb_configure_window(wm->conn, c->client,
@@ -277,27 +228,13 @@ BwmClient *bwm_frame_window(BwmWM *wm, xcb_window_t client_win, bool already_map
     c->titlebar = xcb_generate_id(wm->conn);
     uint32_t tm = XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK;
     uint32_t tv[] = {
-        BWM_COLOR_TITLE_BG,
+        wm->config.titlebar_color,
         XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE |
         XCB_EVENT_MASK_BUTTON_MOTION | XCB_EVENT_MASK_EXPOSURE,
     };
     xcb_create_window(wm->conn, XCB_COPY_FROM_PARENT, c->titlebar, c->frame,
                       0, 0, cw, BWM_TITLEBAR_HEIGHT, 0,
                       XCB_WINDOW_CLASS_INPUT_OUTPUT, wm->screen->root_visual, tm, tv);
-
-    /* buttons */
-    static const uint32_t btn_colours[BWM_BTN_COUNT] = {
-        BWM_COLOR_BTN_CLOSE, BWM_COLOR_BTN_MIN, BWM_COLOR_BTN_MAX,
-    };
-    for (int b = 0; b < BWM_BTN_COUNT; ++b) {
-        c->buttons[b] = xcb_generate_id(wm->conn);
-        uint32_t bm = XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK;
-        uint32_t bv[] = { btn_colours[b], XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_EXPOSURE };
-        xcb_create_window(wm->conn, XCB_COPY_FROM_PARENT, c->buttons[b], c->titlebar,
-                          bwm_btn_x(c, b), bwm_btn_y(), BWM_BTN_SIZE, BWM_BTN_SIZE, 0,
-                          XCB_WINDOW_CLASS_INPUT_OUTPUT, wm->screen->root_visual, bm, bv);
-        xcb_map_window(wm->conn, c->buttons[b]);
-    }
 
     /* reparent */
     if (already_mapped) xcb_unmap_window(wm->conn, client_win);
@@ -325,8 +262,6 @@ void bwm_unframe(BwmWM *wm, BwmClient *c)
 
     xcb_unmap_window(wm->conn, c->client);
     xcb_reparent_window(wm->conn, c->client, wm->root, c->x, c->y);
-    for (int b = 0; b < BWM_BTN_COUNT; ++b)
-        xcb_destroy_window(wm->conn, c->buttons[b]);
     xcb_destroy_window(wm->conn, c->titlebar);
     xcb_destroy_window(wm->conn, c->frame);
     xcb_flush(wm->conn);

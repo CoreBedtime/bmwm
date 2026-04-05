@@ -25,27 +25,21 @@
 #define BWM_COLOR_TITLE_BG    0xFF3C3F41
 #define BWM_COLOR_TITLE_FOCUS 0xFF214283
 #define BWM_COLOR_BORDER      0xFF555555
-#define BWM_COLOR_BTN_CLOSE   0xFFBE4646
-#define BWM_COLOR_BTN_MIN     0xFF8E8E2A
-#define BWM_COLOR_BTN_MAX     0xFF2A7A2A
-
-#define BWM_BTN_SIZE          13
-#define BWM_BTN_MARGIN         5
 
 #define BWM_MIN_CLIENT_W      80
 #define BWM_MIN_CLIENT_H      40
 
 /* -------------------------------------------------------------------------
- * Button enum
+ * Config
  * ---------------------------------------------------------------------- */
 
-typedef enum {
-    BWM_BTN_NONE     = -1,
-    BWM_BTN_CLOSE    =  0,
-    BWM_BTN_MINIMISE =  1,
-    BWM_BTN_MAXIMISE =  2,
-    BWM_BTN_COUNT    =  3,
-} BwmButton;
+typedef struct BwmConfig BwmConfig;
+struct BwmConfig {
+    uint32_t root_color;
+    uint32_t titlebar_color;
+    uint32_t titlebar_focus_color;
+    char     root_image[PATH_MAX];
+};
 
 /* -------------------------------------------------------------------------
  * Client
@@ -56,7 +50,6 @@ struct BwmClient {
     xcb_window_t frame;
     xcb_window_t titlebar;
     xcb_window_t client;
-    xcb_window_t buttons[BWM_BTN_COUNT];
 
     int16_t  x, y;
     uint16_t w, h;
@@ -90,6 +83,7 @@ struct BwmWM {
     xcb_screen_t     *screen;
     xcb_window_t      root;
     xcb_window_t      cursor_win;
+    xcb_pixmap_t      root_background;
 
     /* atoms */
     xcb_atom_t atom_wm_delete_window;
@@ -100,6 +94,7 @@ struct BwmWM {
 
     BwmClient *focused;
     BwmClient *clients;
+    BwmConfig   config;
 
     uint16_t root_w;
     uint16_t root_h;
@@ -115,6 +110,8 @@ struct BwmWM {
 
 int  bwm_init(BwmWM *wm);
 void bwm_destroy(BwmWM *wm);
+void bwm_load_config(BwmWM *wm, const char *path);
+void bwm_apply_root_background(BwmWM *wm);
 
 /* -------------------------------------------------------------------------
  * client.c — client list, frame creation/destruction, geometry, draw
@@ -125,7 +122,6 @@ void       bwm_client_remove(BwmWM *wm, BwmClient *c);
 BwmClient *bwm_find_by_frame(BwmWM *wm, xcb_window_t w);
 BwmClient *bwm_find_by_titlebar(BwmWM *wm, xcb_window_t w);
 BwmClient *bwm_find_by_client(BwmWM *wm, xcb_window_t w);
-BwmClient *bwm_find_by_button(BwmWM *wm, xcb_window_t w, BwmButton *which_out);
 
 BwmClient *bwm_frame_window(BwmWM *wm, xcb_window_t client_win, bool already_mapped);
 void       bwm_unframe(BwmWM *wm, BwmClient *c);
@@ -140,8 +136,6 @@ void       bwm_adopt_existing_windows(BwmWM *wm);
 
 uint16_t   bwm_frame_w(uint16_t client_w);
 uint16_t   bwm_frame_h(uint16_t client_h);
-int16_t    bwm_btn_x(BwmClient *c, int b);
-int16_t    bwm_btn_y(void);
 
 /* -------------------------------------------------------------------------
  * focus.c — focus management
