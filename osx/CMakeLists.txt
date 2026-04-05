@@ -5,6 +5,18 @@ find_library(COREGRAPHICS_FRAMEWORK CoreGraphics REQUIRED)
 find_library(IMAGEIO_FRAMEWORK ImageIO REQUIRED)
 find_library(IOKIT_FRAMEWORK IOKit REQUIRED)
 find_library(IOSURFACE_FRAMEWORK IOSurface REQUIRED)
+find_path(XCB_INCLUDE_DIR xcb/xcb.h
+    HINTS
+        /opt/local/include
+)
+find_library(XCB_LIBRARY xcb
+    HINTS
+        /opt/local/lib
+)
+
+if(NOT XCB_INCLUDE_DIR OR NOT XCB_LIBRARY)
+    message(FATAL_ERROR "libxcb was not found. Install xorg-libxcb first.")
+endif()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 find_program(CODESIGN_EXECUTABLE codesign REQUIRED)
 
@@ -40,10 +52,12 @@ target_include_directories(LibRenderServer PUBLIC
 
 target_include_directories(LibRenderServer PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/FramebufferLib"
+    "${XCB_INCLUDE_DIR}"
 )
 
 target_link_libraries(LibRenderServer PUBLIC
     FramebufferLib
+    "${XCB_LIBRARY}"
 )
 
 set_target_properties(LibRenderServer PROPERTIES OUTPUT_NAME "RenderServer")
