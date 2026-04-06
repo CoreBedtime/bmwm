@@ -334,6 +334,7 @@ target_compile_options(AppLaunch PRIVATE
 
 target_link_libraries(AppLaunch PRIVATE
     "${FOUNDATION_FRAMEWORK}"
+    "-framework Security"
 )
 
 add_dependencies(AppLaunch AppLaunchRunner)

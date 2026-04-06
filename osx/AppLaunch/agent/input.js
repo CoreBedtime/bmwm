@@ -9,11 +9,15 @@ import {
   CG_RIGHT_MOUSE_DOWN,
   CG_RIGHT_MOUSE_DRAGGED,
   CG_RIGHT_MOUSE_UP,
+  CG_SCROLL_WHEEL,
+  CG_FLAGS_CHANGED,
   X11_BUTTON1_MASK,
   X11_BUTTON2_MASK,
   X11_BUTTON3_MASK,
   X11_BUTTON_PRESS,
   X11_BUTTON_RELEASE,
+  X11_CONFIGURE_NOTIFY,
+  X11_ENTER_NOTIFY,
   X11_EVENT_BUFFER_SIZE,
   X11_EVENT_DETAIL_OFFSET,
   X11_EVENT_STATE_OFFSET,
@@ -21,8 +25,13 @@ import {
   X11_EVENT_WINDOW_OFFSET,
   X11_EVENT_X_OFFSET,
   X11_EVENT_Y_OFFSET,
+  X11_EVENT_X_ROOT_OFFSET,
+  X11_EVENT_Y_ROOT_OFFSET,
+  X11_FOCUS_IN,
+  X11_FOCUS_OUT,
   X11_KEY_PRESS,
   X11_KEY_RELEASE,
+  X11_LEAVE_NOTIFY,
   X11_MOTION_NOTIFY,
   clampFrame,
   clampNumber,
@@ -225,6 +234,222 @@ export function forwardMotionEvent(eventPtr) {
   postWindowMouseEvent(entry, eventType, state, eventPtr, 0, 0.0);
 }
 
+export function forwardScrollEvent(eventPtr, pressed) {
+  var entry = findMirrorEntryByHandle(
+    eventPtr.add(X11_EVENT_WINDOW_OFFSET).readPointer(),
+  );
+  if (entry == null) {
+    return;
+  }
+
+  var detail = eventPtr.add(X11_EVENT_DETAIL_OFFSET).readU32();
+  var state = eventPtr.add(X11_EVENT_STATE_OFFSET).readU32();
+  var point = x11EventToWindowPoint(entry, eventPtr);
+
+  var scrollX = 0;
+  var scrollY = 0;
+  var isContinuous = 0;
+
+  switch (detail) {
+    case 4:
+      scrollY = 1;
+      break;
+    case 5:
+      scrollY = -1;
+      break;
+    case 6:
+      scrollX = -1;
+      break;
+    case 7:
+      scrollX = 1;
+      break;
+    default:
+      return;
+  }
+
+  activateEntryWindow(entry);
+
+  var scrollEvent = bridge.renderSupport.CGEventCreateScrollWheelEvent2(
+    bridge.renderSupport.inputSource,
+    0,
+    2,
+    scrollY,
+    scrollX,
+  );
+  if (scrollEvent.isNull()) {
+    logOnce("scroll-create-failed", "CGEventCreateScrollWheelEvent failed");
+    return;
+  }
+
+  bridge.renderSupport.CGEventSetDoubleValueField(
+    scrollEvent,
+    bridge.renderSupport.kCGScrollWheelEventFixedPtDeltaAxis1,
+    scrollY,
+  );
+  bridge.renderSupport.CGEventSetDoubleValueField(
+    scrollEvent,
+    bridge.renderSupport.kCGScrollWheelEventFixedPtDeltaAxis2,
+    scrollX,
+  );
+  bridge.renderSupport.CGEventSetDoubleValueField(
+    scrollEvent,
+    bridge.renderSupport.kCGScrollWheelEventPointDeltaAxis1,
+    scrollY * 10.0,
+  );
+  bridge.renderSupport.CGEventSetDoubleValueField(
+    scrollEvent,
+    bridge.renderSupport.kCGScrollWheelEventPointDeltaAxis2,
+    scrollX * 10.0,
+  );
+  bridge.renderSupport.CGEventSetIntegerValueField(
+    scrollEvent,
+    bridge.renderSupport.kCGScrollWheelEventIsContinuous,
+    isContinuous,
+  );
+
+  postCGEvent(scrollEvent);
+}
+
+export function forwardContinuousScrollEvent(eventPtr) {
+  var entry = findMirrorEntryByHandle(
+    eventPtr.add(X11_EVENT_WINDOW_OFFSET).readPointer(),
+  );
+  if (entry == null) {
+    return;
+  }
+
+  var state = eventPtr.add(X11_EVENT_STATE_OFFSET).readU32();
+  var point = x11EventToWindowPoint(entry, eventPtr);
+
+  var scrollX = eventPtr.add(X11_EVENT_X_OFFSET).readS32() / 100.0;
+  var scrollY = eventPtr.add(X11_EVENT_Y_OFFSET).readS32() / 100.0;
+
+  if (scrollX === 0 && scrollY === 0) {
+    return;
+  }
+
+  activateEntryWindow(entry);
+
+  var scrollEvent = bridge.renderSupport.CGEventCreateScrollWheelEvent(
+    bridge.renderSupport.inputSource,
+    0,
+    2,
+    Math.round(scrollY),
+    Math.round(scrollX),
+  );
+  if (scrollEvent.isNull()) {
+    return;
+  }
+
+  bridge.renderSupport.CGEventSetDoubleValueField(
+    scrollEvent,
+    bridge.renderSupport.kCGScrollWheelEventFixedPtDeltaAxis1,
+    scrollY,
+  );
+  bridge.renderSupport.CGEventSetDoubleValueField(
+    scrollEvent,
+    bridge.renderSupport.kCGScrollWheelEventFixedPtDeltaAxis2,
+    scrollX,
+  );
+  bridge.renderSupport.CGEventSetDoubleValueField(
+    scrollEvent,
+    bridge.renderSupport.kCGScrollWheelEventPointDeltaAxis1,
+    scrollY * 10.0,
+  );
+  bridge.renderSupport.CGEventSetDoubleValueField(
+    scrollEvent,
+    bridge.renderSupport.kCGScrollWheelEventPointDeltaAxis2,
+    scrollX * 10.0,
+  );
+  bridge.renderSupport.CGEventSetIntegerValueField(
+    scrollEvent,
+    bridge.renderSupport.kCGScrollWheelEventIsContinuous,
+    1,
+  );
+
+  postCGEvent(scrollEvent);
+}
+
+export function forwardEnterNotify(eventPtr) {
+  var entry = findMirrorEntryByHandle(
+    eventPtr.add(X11_EVENT_WINDOW_OFFSET).readPointer(),
+  );
+  if (entry == null) {
+    return;
+  }
+
+  var state = eventPtr.add(X11_EVENT_STATE_OFFSET).readU32();
+  activateEntryWindow(entry);
+  postWindowMouseEvent(entry, CG_MOUSE_MOVED, state, eventPtr, 0, 0.0);
+}
+
+export function forwardLeaveNotify(eventPtr) {
+  var entry = findMirrorEntryByHandle(
+    eventPtr.add(X11_EVENT_WINDOW_OFFSET).readPointer(),
+  );
+  if (entry == null) {
+    return;
+  }
+
+  var state = eventPtr.add(X11_EVENT_STATE_OFFSET).readU32();
+  postWindowMouseEvent(entry, CG_MOUSE_MOVED, state, eventPtr, 0, 0.0);
+}
+
+export function forwardFocusIn(eventPtr) {
+  var entry = findMirrorEntryByHandle(
+    eventPtr.add(X11_EVENT_WINDOW_OFFSET).readPointer(),
+  );
+  if (entry == null) {
+    return;
+  }
+
+  try {
+    activateEntryWindow(entry);
+  } catch (e) {}
+
+  try {
+    entry.window.makeKeyAndOrderFront_(ptr(0));
+  } catch (e) {}
+}
+
+export function forwardFocusOut(eventPtr) {
+  var entry = findMirrorEntryByHandle(
+    eventPtr.add(X11_EVENT_WINDOW_OFFSET).readPointer(),
+  );
+  if (entry == null) {
+    return;
+  }
+
+  try {
+    entry.window.orderOut_(ptr(0));
+  } catch (e) {}
+}
+
+export function forwardConfigureNotify(eventPtr) {
+  var entry = findMirrorEntryByHandle(
+    eventPtr.add(X11_EVENT_WINDOW_OFFSET).readPointer(),
+  );
+  if (entry == null) {
+    return;
+  }
+
+  var width = eventPtr.add(X11_EVENT_X_OFFSET).readS32();
+  var height = eventPtr.add(X11_EVENT_Y_OFFSET).readS32();
+
+  if (width > 0 && height > 0 && entry.window != null) {
+    try {
+      entry.window.setFrame_display_animate_(
+        {
+          origin: entry.window.frame().origin,
+          size: { width: width, height: height },
+        },
+        1,
+        0,
+      );
+    } catch (e) {}
+  }
+}
+
 export function forwardKeyEvent(eventPtr, pressed) {
   var entry = findMirrorEntryByHandle(
     eventPtr.add(X11_EVENT_WINDOW_OFFSET).readPointer(),
@@ -277,13 +502,38 @@ export function pumpBridgeInput() {
         forwardKeyEvent(eventPtr, false);
         break;
       case X11_BUTTON_PRESS:
-        forwardMouseEvent(eventPtr, true);
+        var detail = eventPtr.add(X11_EVENT_DETAIL_OFFSET).readU32();
+        if (detail >= 4) {
+          forwardScrollEvent(eventPtr, true);
+        } else {
+          forwardMouseEvent(eventPtr, true);
+        }
         break;
       case X11_BUTTON_RELEASE:
-        forwardMouseEvent(eventPtr, false);
+        var releaseDetail = eventPtr.add(X11_EVENT_DETAIL_OFFSET).readU32();
+        if (releaseDetail >= 4) {
+          forwardScrollEvent(eventPtr, false);
+        } else {
+          forwardMouseEvent(eventPtr, false);
+        }
         break;
       case X11_MOTION_NOTIFY:
         forwardMotionEvent(eventPtr);
+        break;
+      case X11_ENTER_NOTIFY:
+        forwardEnterNotify(eventPtr);
+        break;
+      case X11_LEAVE_NOTIFY:
+        forwardLeaveNotify(eventPtr);
+        break;
+      case X11_FOCUS_IN:
+        forwardFocusIn(eventPtr);
+        break;
+      case X11_FOCUS_OUT:
+        forwardFocusOut(eventPtr);
+        break;
+      case X11_CONFIGURE_NOTIFY:
+        forwardConfigureNotify(eventPtr);
         break;
       default:
         break;

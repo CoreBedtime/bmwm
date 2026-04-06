@@ -13,9 +13,11 @@ LOADER="${ROOT_DIR}/.build/ninja/osx/loader-macos"
 LOG_FILE="${LOG_FILE:-/tmp/applicator-mainuserspace.log}"
 
 if [ "$#" -lt 1 ]; then
-    printf 'Usage: %s /path/to/App.app [app-args...]\n' "${BASH_SOURCE[0]}" >&2
+    printf 'Usage: %s /path/to/App.app|/path/to/binary [...]\n' "${BASH_SOURCE[0]}" >&2
     exit 1
 fi
+
+APPS=("$@")
 
 if [ ! -x "$LOADER" ]; then
     printf 'start-applaunch-bwm.sh: %s is missing or not executable\n' "$LOADER" >&2
@@ -89,10 +91,14 @@ if ! kill -0 "$BWM_PID" >/dev/null 2>&1; then
     exit 1
 fi
 
-DISPLAY="$DISPLAY_VALUE" "$APP_LAUNCH" "$@" &
-APP_LAUNCH_PID=$!
+LAUNCH_PIDS=()
+for app in "${APPS[@]}"; do
+    DISPLAY="$DISPLAY_VALUE" "$APP_LAUNCH" "$app" &
+    LAUNCH_PIDS+=($!)
+done
+
 set +e
-wait "$APP_LAUNCH_PID"
-APP_LAUNCH_RC=$?
+for pid in "${LAUNCH_PIDS[@]}"; do
+    wait "$pid"
+done
 set -e
-exit "$APP_LAUNCH_RC"
