@@ -4,6 +4,7 @@ import { loadRenderSupport } from "./loaders.js";
 import { pumpBridgeInput } from "./input.js";
 import { ensureX11 } from "./render.js";
 import { collectObjCDescriptors, syncMirrors } from "./windows.js";
+import { installTitlebarPatch } from "./titlebar-patch.js";
 
 export function refreshMirrors() {
   if (!ensureX11()) {
@@ -176,6 +177,7 @@ export function installBridge() {
   loadRenderSupport();
   bridge.mode = "objc";
   installObjCHooks();
+  installTitlebarPatch();
   log("bridge mode: " + bridge.mode);
 
   bridge.refreshTimer = setInterval(
