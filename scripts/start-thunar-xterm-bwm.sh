@@ -3,6 +3,14 @@
 
 set -euo pipefail
 
+setup_x11_socket_dir() {
+    if [ ! -d /tmp/.X11-unix ] || [ "$(stat -f '%u' /tmp/.X11-unix)" != "0" ]; then
+        rm -rf /tmp/.X11-unix
+        mkdir -m 1777 /tmp/.X11-unix
+    fi
+}
+setup_x11_socket_dir
+
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 BWM="${ROOT_DIR}/.build/ninja/osx/bwm"
 LOADER="${ROOT_DIR}/.build/ninja/osx/loader-macos"
