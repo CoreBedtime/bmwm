@@ -156,7 +156,6 @@ export const CG_MOUSE_CENTER = 2;
 export const CG_SCROLL_WHEEL = 22;
 export const CG_TABLET_POINTER = 23;
 export const CG_TABLET_PROXIMITY = 24;
-export const CG_OTHER_MOUSE_DRAGGED = 27;
 export const CG_FLAGS_CHANGED = 29;
 export const CG_SCROLL_DIRECTION_DEFAULT = 0;
 export const CG_SCROLL_DIRECTION_REVERSED = 1;
