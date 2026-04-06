@@ -52,13 +52,8 @@ The current render-server bridge expects these X11 tools to be available locally
 
 These binaries come from the XQuartz package, not MacPorts. The code uses them to start a headless X server and to generate a mode line that matches the active display size.
 
-## Running
+## Running (Will prompt for sudo)
 
-- `./scripts/start-xclock.sh` starts the loader, waits for the X display, and launches `/opt/X11/bin/xclock`
-- `./scripts/start-thunar.sh` starts the loader and launches Thunar on the created X display
-- `./scripts/start-bwm.sh` starts the loader with `RENDER_SERVER_EXTERNAL_WM=1`, then launches `bwm`
-- `./scripts/start-thunar-bwm.sh` starts the loader with `RENDER_SERVER_EXTERNAL_WM=1`, then launches `bwm` and Thunar
-- `./scripts/start-thunar-xterm-bwm.sh` starts the loader with `RENDER_SERVER_EXTERNAL_WM=1`, then launches `bwm`, Thunar, and xterm
 - `./scripts/start-applaunch-bwm.sh /path/to/App.app [app-args...]` starts the loader with `RENDER_SERVER_EXTERNAL_WM=1`, then launches `bwm` and `AppLaunch` on the same X display
 - `./.build/ninja/osx/AppLaunch /path/to/App.app [app-args...]` launches the app bundle executable and injects it with Frida before resume
 

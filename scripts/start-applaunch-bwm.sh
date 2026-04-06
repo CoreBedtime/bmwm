@@ -7,9 +7,13 @@
 set -euo pipefail
 
 setup_x11_socket_dir() {
+    for i in $(seq 0 99); do
+        sudo rm -f "/tmp/.X${i}-lock" 2>/dev/null || true
+    done
     if [ ! -d /tmp/.X11-unix ] || [ "$(stat -f '%u' /tmp/.X11-unix)" != "0" ]; then
-        rm -rf /tmp/.X11-unix
-        mkdir -m 1777 /tmp/.X11-unix
+        sudo rm -rf /tmp/.X11-unix
+        sudo mkdir -m 1777 /tmp/.X11-unix
+        sudo chown 0 /tmp/.X11-unix
     fi
 }
 setup_x11_socket_dir
@@ -42,7 +46,7 @@ if [ ! -x "$APP_LAUNCH" ]; then
     exit 1
 fi
 
-rm -f "$LOG_FILE"
+sudo rm -f "$LOG_FILE"
 
 sudo env BWM_CONFIG="${ROOT_DIR}/dev-config/bwm.lua" RENDER_SERVER_EXTERNAL_WM=1 "$LOADER" >"$LOG_FILE" 2>&1 &
 LOADER_PID=$!
@@ -89,7 +93,7 @@ fi
 
 printf 'start-applaunch-bwm.sh: using DISPLAY=%s\n' "$DISPLAY_VALUE"
 
-BWM_ENABLE_EXIT_BUTTON=1 BWM_CONFIG="${ROOT_DIR}/dev-config/bwm.lua" DISPLAY="$DISPLAY_VALUE" "$BWM" &
+sudo BWM_ENABLE_EXIT_BUTTON=1 BWM_CONFIG="${ROOT_DIR}/dev-config/bwm.lua" DISPLAY="$DISPLAY_VALUE" "$BWM" &
 BWM_PID=$!
 
 sleep 1

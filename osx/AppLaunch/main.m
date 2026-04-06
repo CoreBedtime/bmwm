@@ -21,6 +21,7 @@
 #include <limits.h>
 #include <libgen.h>
 #include <dirent.h>
+#include <pwd.h>
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <Security/Security.h>
@@ -865,6 +866,30 @@ static bool launch_executable(const char *executable_path,
     if (rc == 0) {
         flags |= POSIX_SPAWN_START_SUSPENDED;
         rc = posix_spawnattr_setflags(&attrs, flags);
+    }
+
+    const char *user_id_str = getenv("USER_ID");
+    if (user_id_str != NULL && user_id_str[0] != '\0') {
+        char *end = NULL;
+        errno = 0;
+        unsigned long uid_val = strtoul(user_id_str, &end, 10);
+        if (errno == 0 && end != user_id_str && *end == '\0' && uid_val <= UINT32_MAX) {
+            uid_t uid = (uid_t)uid_val;
+            gid_t gid = 0;
+            
+            struct passwd *pw = getpwuid(uid);
+            if (pw != NULL) {
+                gid = pw->pw_gid;
+            }
+
+            rc = posix_spawnattr_setuid(&attrs, uid);
+            if (rc == 0) {
+                rc = posix_spawnattr_setgid(&attrs, gid);
+            }
+            if (rc == 0) {
+                fprintf(stderr, "[bootstrap] launching as uid=%u gid=%u\n", uid, gid);
+            }
+        }
     }
 
     if (rc == 0) {

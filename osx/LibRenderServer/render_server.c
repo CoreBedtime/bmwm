@@ -61,6 +61,23 @@ static bool render_server_file_is_executable(const char *path)
     return path != NULL && access(path, X_OK) == 0;
 }
 
+static void render_server_cleanup_stale_x11(void)
+{
+    for (int i = 0; i < 100; i++) {
+        char lock_path[64];
+        if (snprintf(lock_path, sizeof(lock_path), "/tmp/.X%d-lock", i) < (int)sizeof(lock_path)) {
+            unlink(lock_path);
+        }
+    }
+
+    for (int i = 0; i < 100; i++) {
+        char socket_path[64];
+        if (snprintf(socket_path, sizeof(socket_path), "/tmp/.X11-unix/X%d", i) < (int)sizeof(socket_path)) {
+            unlink(socket_path);
+        }
+    }
+}
+
 static void render_server_add_ns(struct timespec *ts, int64_t ns)
 {
     ts->tv_nsec += (long)(ns % 1000000000LL);
@@ -435,6 +452,7 @@ static int render_server_wait_for_displayfd(pid_t xorg_pid, int read_fd, int *di
     char buffer[64];
     size_t used = 0;
     int waited_ms = 0;
+    bool eof_seen = false;
 
     memset(buffer, 0, sizeof(buffer));
 
@@ -454,9 +472,46 @@ static int render_server_wait_for_displayfd(pid_t xorg_pid, int read_fd, int *di
             return 1;
         }
 
+        if (poll_result > 0 && (fd.revents & (POLLIN | POLLHUP)) != 0) {
+            ssize_t read_size = read(read_fd, buffer + used, sizeof(buffer) - used - 1);
+            if (read_size < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                fprintf(stderr, "[RenderServer] reading the Xorg displayfd failed: %s\n", strerror(errno));
+                return 1;
+            }
+
+            if (read_size == 0) {
+                eof_seen = true;
+            } else {
+                used += (size_t)read_size;
+                buffer[used] = '\0';
+
+                char *end = NULL;
+                long parsed = strtol(buffer, &end, 10);
+                if (end != buffer && parsed >= 0 && parsed <= 1024) {
+                    *display_out = (int)parsed;
+                    return 0;
+                }
+            }
+        }
+
+        if (eof_seen) {
+            break;
+        }
+
         int status = 0;
         pid_t waited = waitpid(xorg_pid, &status, WNOHANG);
         if (waited == xorg_pid) {
+            if (used > 0) {
+                char *end = NULL;
+                long parsed = strtol(buffer, &end, 10);
+                if (end != buffer && parsed >= 0 && parsed <= 1024) {
+                    *display_out = (int)parsed;
+                    return 0;
+                }
+            }
             fprintf(stderr, "[RenderServer] Xorg exited before reporting a display number\n");
             return 1;
         }
@@ -469,27 +524,9 @@ static int render_server_wait_for_displayfd(pid_t xorg_pid, int read_fd, int *di
             }
             continue;
         }
+    }
 
-        if ((fd.revents & (POLLIN | POLLHUP)) == 0) {
-            continue;
-        }
-
-        ssize_t read_size = read(read_fd, buffer + used, sizeof(buffer) - used - 1);
-        if (read_size < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            fprintf(stderr, "[RenderServer] reading the Xorg displayfd failed: %s\n", strerror(errno));
-            return 1;
-        }
-
-        if (read_size == 0) {
-            break;
-        }
-
-        used += (size_t)read_size;
-        buffer[used] = '\0';
-
+    if (used > 0) {
         char *end = NULL;
         long parsed = strtol(buffer, &end, 10);
         if (end != buffer && parsed >= 0 && parsed <= 1024) {
@@ -1003,6 +1040,8 @@ static int render_server_event_loop(RenderState *state,
 
 int render_server_run(void)
 {
+    render_server_cleanup_stale_x11();
+
     RenderState *state = screenproc_create();
     if (state == NULL) {
         fprintf(stderr, "[RenderServer] failed to create framebuffer state\n");
