@@ -93,7 +93,7 @@ fi
 
 printf 'start-applaunch-bwm.sh: using DISPLAY=%s\n' "$DISPLAY_VALUE"
 
-sudo BWM_ENABLE_EXIT_BUTTON=1 BWM_CONFIG="${ROOT_DIR}/dev-config/bwm.lua" DISPLAY="$DISPLAY_VALUE" "$BWM" &
+sudo BWM_CONFIG="${ROOT_DIR}/dev-config/bwm.lua" DISPLAY="$DISPLAY_VALUE" "$BWM" &
 BWM_PID=$!
 
 sleep 1

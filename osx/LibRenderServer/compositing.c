@@ -23,6 +23,10 @@ typedef struct {
 typedef struct {
     uint32_t background_color;
     CGImageRef background_image;
+    uint8_t *cached_pixels;
+    size_t cached_size;
+    uint32_t cached_width;
+    uint32_t cached_height;
 } RenderServerBackdrop;
 
 typedef struct {
@@ -287,6 +291,14 @@ static void render_server_release_backdrop(RenderServerBackdrop *backdrop)
         return;
     }
 
+    if (backdrop->cached_pixels != NULL) {
+        free(backdrop->cached_pixels);
+        backdrop->cached_pixels = NULL;
+    }
+    backdrop->cached_size = 0;
+    backdrop->cached_width = 0;
+    backdrop->cached_height = 0;
+
     if (backdrop->background_image != NULL) {
         CGImageRelease(backdrop->background_image);
         backdrop->background_image = NULL;
@@ -353,6 +365,94 @@ static CGContextRef render_server_create_bitmap_context(uint8_t *destination,
 static void render_server_draw_backdrop(CGContextRef ctx,
                                         const RenderServerBackdrop *backdrop,
                                         uint32_t width,
+                                        uint32_t height);
+
+static bool render_server_prepare_backdrop_cache(RenderServerBackdrop *backdrop,
+                                                 uint32_t width,
+                                                 uint32_t height)
+{
+    if (backdrop == NULL || width == 0 || height == 0) {
+        return false;
+    }
+
+    size_t row_bytes = (size_t)width * 4u;
+    if (row_bytes / 4u != (size_t)width) {
+        return false;
+    }
+
+    size_t cache_size = row_bytes * (size_t)height;
+    if (height != 0 && cache_size / (size_t)height != row_bytes) {
+        return false;
+    }
+
+    if (backdrop->cached_pixels != NULL &&
+        backdrop->cached_width == width &&
+        backdrop->cached_height == height &&
+        backdrop->cached_size == cache_size) {
+        return true;
+    }
+
+    free(backdrop->cached_pixels);
+    backdrop->cached_pixels = NULL;
+    backdrop->cached_size = 0;
+    backdrop->cached_width = 0;
+    backdrop->cached_height = 0;
+
+    uint8_t *pixels = malloc(cache_size);
+    if (pixels == NULL) {
+        return false;
+    }
+
+    CGContextRef ctx = render_server_create_bitmap_context(pixels,
+                                                           row_bytes,
+                                                           width,
+                                                           height);
+    if (ctx == NULL) {
+        free(pixels);
+        return false;
+    }
+
+    render_server_draw_backdrop(ctx, backdrop, width, height);
+    CGContextRelease(ctx);
+
+    backdrop->cached_pixels = pixels;
+    backdrop->cached_size = cache_size;
+    backdrop->cached_width = width;
+    backdrop->cached_height = height;
+    return true;
+}
+
+static bool render_server_copy_backdrop_cache(const RenderServerBackdrop *backdrop,
+                                             uint8_t *destination,
+                                             size_t destination_stride,
+                                             uint32_t width,
+                                             uint32_t height)
+{
+    if (backdrop == NULL || backdrop->cached_pixels == NULL || destination == NULL) {
+        return false;
+    }
+
+    if (backdrop->cached_width != width || backdrop->cached_height != height) {
+        return false;
+    }
+
+    size_t row_bytes = (size_t)width * 4u;
+    if (destination_stride < row_bytes) {
+        return false;
+    }
+
+    for (uint32_t y = 0; y < height; ++y) {
+        memcpy(destination + ((size_t)y * destination_stride),
+               backdrop->cached_pixels + ((size_t)y * row_bytes),
+               row_bytes);
+    }
+
+    return true;
+}
+
+static void render_server_draw_backdrop(CGContextRef ctx,
+                                        const RenderServerBackdrop *backdrop,
+                                        uint32_t width,
                                         uint32_t height)
 {
     if (ctx == NULL || width == 0 || height == 0) {
@@ -391,6 +491,10 @@ static bool render_server_draw_surface_background(uint8_t *destination,
                                                   uint32_t height,
                                                   const RenderServerBackdrop *backdrop)
 {
+    if (render_server_copy_backdrop_cache(backdrop, destination, destination_stride, width, height)) {
+        return true;
+    }
+
     CGContextRef ctx = render_server_create_bitmap_context(destination,
                                                            destination_stride,
                                                            width,
@@ -447,7 +551,7 @@ static CGImageRef render_server_create_window_image(const uint8_t *source,
 }
 
 int render_server_prepare_initial_frame(RenderState *state,
-                                        const RenderServerCompositor *compositor)
+                                        RenderServerCompositor *compositor)
 {
     ScreenprocBuffers buffers;
     memset(&buffers, 0, sizeof(buffers));
@@ -461,6 +565,11 @@ int render_server_prepare_initial_frame(RenderState *state,
     if ((size_t)buffers.stride < ((size_t)buffers.width * 4)) {
         fprintf(stderr, "[RenderServer] framebuffer stride is too small\n");
         return 1;
+    }
+
+    if (compositor != NULL &&
+        !render_server_prepare_backdrop_cache(&compositor->backdrop, buffers.width, buffers.height)) {
+        fprintf(stderr, "[RenderServer] warning: failed to cache the backdrop, falling back to direct drawing\n");
     }
 
     if (!render_server_draw_surface_background((uint8_t *)buffers.buffer0,
@@ -662,10 +771,16 @@ int render_server_compose_frame(RenderState *state,
         return 1;
     }
 
-    render_server_draw_backdrop(ctx,
-                                compositor != NULL ? &compositor->backdrop : NULL,
-                                width,
-                                height);
+    if (!render_server_copy_backdrop_cache(compositor != NULL ? &compositor->backdrop : NULL,
+                                           destination,
+                                           destination_stride,
+                                           width,
+                                           height)) {
+        render_server_draw_backdrop(ctx,
+                                    compositor != NULL ? &compositor->backdrop : NULL,
+                                    width,
+                                    height);
+    }
 
     if (composite_enabled) {
         xcb_query_tree_cookie_t tree_cookie = xcb_query_tree(connection, screen->root);

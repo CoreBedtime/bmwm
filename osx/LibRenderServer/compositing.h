@@ -13,7 +13,7 @@ RenderServerCompositor *render_server_compositor_create(const char *config_path)
 void render_server_compositor_destroy(RenderServerCompositor *compositor);
 
 int render_server_prepare_initial_frame(RenderState *state,
-                                        const RenderServerCompositor *compositor);
+                                        RenderServerCompositor *compositor);
 int render_server_enable_composite(xcb_connection_t *connection,
                                    xcb_screen_t     *screen,
                                    const char       *display_name,

@@ -178,6 +178,68 @@ export function postWindowMouseEvent(
   }
 }
 
+export function postWindowKeyboardEvent(entry, eventPtr, pressed) {
+  if (entry == null || entry.window == null) {
+    return false;
+  }
+
+  var state = eventPtr.add(X11_EVENT_STATE_OFFSET).readU32();
+  var keycode = eventPtr.add(X11_EVENT_DETAIL_OFFSET).readU32();
+  var macKeyCode = x11KeycodeToMacKeycode(keycode);
+  if (macKeyCode == null) {
+    return false;
+  }
+
+  activateEntryWindow(entry);
+
+  // Keep the key event local to AppKit; posting it globally would echo back
+  // through XQuartz/X11 and produce a duplicate keystroke.
+  var cgEvent = bridge.renderSupport.CGEventCreateKeyboardEvent(
+    bridge.renderSupport.inputSource,
+    macKeyCode & 0xffff,
+    pressed ? 1 : 0,
+  );
+  if (isNullValue(cgEvent)) {
+    logOnce("keyboard-create-failed", "CGEventCreateKeyboardEvent failed");
+    return false;
+  }
+
+  try {
+    bridge.renderSupport.CGEventSetFlags(cgEvent, x11StateToCGFlags(state));
+
+    var event = null;
+    try {
+      event = ObjC.classes.NSEvent.eventWithCGEvent_(cgEvent);
+    } catch (e) {}
+
+    if (isNullValue(event)) {
+      logOnce(
+        "keyboard-nsevent-failed",
+        "failed to bridge CGEvent into an AppKit keyboard event",
+      );
+      return false;
+    }
+
+    try {
+      ObjC.classes.NSApplication.sharedApplication().sendEvent_(event);
+      return true;
+    } catch (e) {}
+
+    try {
+      entry.window.sendEvent_(event);
+      return true;
+    } catch (e) {
+      logOnce(
+        "appkit-key-send-failed",
+        "failed to deliver AppKit keyboard event: " + errorToString(e),
+      );
+      return false;
+    }
+  } finally {
+    bridge.renderSupport.CFRelease(cgEvent);
+  }
+}
+
 export function forwardMouseEvent(eventPtr, pressed) {
   var entry = findMirrorEntryByHandle(
     eventPtr.add(X11_EVENT_WINDOW_OFFSET).readPointer(),
@@ -458,26 +520,7 @@ export function forwardKeyEvent(eventPtr, pressed) {
     return;
   }
 
-  var state = eventPtr.add(X11_EVENT_STATE_OFFSET).readU32();
-  var keycode = eventPtr.add(X11_EVENT_DETAIL_OFFSET).readU32();
-  var macKeyCode = x11KeycodeToMacKeycode(keycode);
-  if (macKeyCode == null) {
-    return;
-  }
-
-  activateEntryWindow(entry);
-
-  var keyEvent = bridge.renderSupport.CGEventCreateKeyboardEvent(
-    bridge.renderSupport.inputSource,
-    macKeyCode & 0xffff,
-    pressed ? 1 : 0,
-  );
-  if (keyEvent.isNull()) {
-    throw new Error("CGEventCreateKeyboardEvent failed");
-  }
-
-  bridge.renderSupport.CGEventSetFlags(keyEvent, x11StateToCGFlags(state));
-  postCGEvent(keyEvent);
+  postWindowKeyboardEvent(entry, eventPtr, pressed);
 }
 
 export function pumpBridgeInput() {

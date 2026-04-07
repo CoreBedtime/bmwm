@@ -12,7 +12,9 @@
 
 extern char** environ;
 extern void amfid_patch(void);
-extern void windowserver_HALT(bool cont);
+
+extern void hide_displays(void);
+extern void restore_displays(void);
 
 static int spawn_main_userspace(void) {
     char binary_path[PROC_PIDPATHINFO_MAXSIZE];
@@ -101,10 +103,8 @@ static int spawn_main_userspace(void) {
 
 int main(void) {
     amfid_patch();
-    windowserver_HALT(false);
-
+    hide_displays();
     int rc = spawn_main_userspace();
-
-    windowserver_HALT(true);
+    restore_displays();
     return rc == 0 ? 0 : 1;
 }

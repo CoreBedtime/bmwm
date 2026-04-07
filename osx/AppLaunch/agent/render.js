@@ -192,28 +192,14 @@ export function renderObjCDescriptor(entry, descriptor) {
   }
 
   try {
-    contentView.layoutSubtreeIfNeeded();
-  } catch (e) {}
-
-  try {
-    contentView.displayIfNeeded();
-  } catch (e) {}
-
-  try {
-    layer.layoutIfNeeded();
-  } catch (e) {}
-
-  try {
-    layer.displayIfNeeded();
-  } catch (e) {}
-
-  try {
     var presentationLayer = layer.presentationLayer();
     if (!isNullValue(presentationLayer)) {
       layer = presentationLayer;
     }
   } catch (e) {}
 
+  // Sample the live presentation layer directly; forcing layout/display here
+  // can kick the source window and produce flicker in the mirror.
   ensureMirrorSurface(entry, bounds);
   bridge.renderSupport.memset(entry.imageData, 0, entry.dataSize);
   renderLayerInContext(layer, entry.bitmapContext);

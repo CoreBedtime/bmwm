@@ -688,7 +688,7 @@ static bool copy_dir_recursive(const char *src_path, const char *dst_path);
 static bool copy_bundle_to_tmp(const char *bundle_path, char *tmp_path, size_t tmp_path_size) {
     char template_path[PATH_MAX];
     snprintf(template_path, sizeof(template_path), "/tmp/applaunch-XXXXXX");
-    
+
     char *tmp_dir = mkdtemp(template_path);
     if (!tmp_dir) {
         return false;
@@ -869,28 +869,28 @@ static bool launch_executable(const char *executable_path,
     }
 
     const char *user_id_str = getenv("USER_ID");
-    if (user_id_str != NULL && user_id_str[0] != '\0') {
-        char *end = NULL;
-        errno = 0;
-        unsigned long uid_val = strtoul(user_id_str, &end, 10);
-        if (errno == 0 && end != user_id_str && *end == '\0' && uid_val <= UINT32_MAX) {
-            uid_t uid = (uid_t)uid_val;
-            gid_t gid = 0;
-            
-            struct passwd *pw = getpwuid(uid);
-            if (pw != NULL) {
-                gid = pw->pw_gid;
-            }
+    // if (user_id_str != NULL && user_id_str[0] != '\0') {
+    //     char *end = NULL;
+    //     errno = 0;
+    //     unsigned long uid_val = strtoul(user_id_str, &end, 10);
+    //     if (errno == 0 && end != user_id_str && *end == '\0' && uid_val <= UINT32_MAX) {
+    //         uid_t uid = (uid_t)uid_val;
+    //         gid_t gid = 0;
 
-            rc = posix_spawnattr_setuid(&attrs, uid);
-            if (rc == 0) {
-                rc = posix_spawnattr_setgid(&attrs, gid);
-            }
-            if (rc == 0) {
-                fprintf(stderr, "[bootstrap] launching as uid=%u gid=%u\n", uid, gid);
-            }
-        }
-    }
+    //         struct passwd *pw = getpwuid(uid);
+    //         if (pw != NULL) {
+    //             gid = pw->pw_gid;
+    //         }
+
+    //         rc = posix_spawnattr_setuid(&attrs, uid);
+    //         if (rc == 0) {
+    //             rc = posix_spawnattr_setgid(&attrs, gid);
+    //         }
+    //         if (rc == 0) {
+    //             fprintf(stderr, "[bootstrap] launching as uid=%u gid=%u\n", uid, gid);
+    //         }
+    //     }
+    // }
 
     if (rc == 0) {
         rc = posix_spawn(&child_pid, executable_path, NULL, &attrs, spawn_argv, environ);
