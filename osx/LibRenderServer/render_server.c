@@ -45,6 +45,9 @@ typedef struct {
     uint16_t          width_override_value;
     bool              height_override;
     uint16_t          height_override_value;
+
+    int16_t           cursor_x;
+    int16_t           cursor_y;
 } XServerState;
 
 static volatile sig_atomic_t g_render_server_running = 1;
@@ -176,297 +179,33 @@ static int render_server_generate_modeline(uint32_t width,
                                            char *modeline_out,
                                            size_t modeline_out_size)
 {
-    static const char *const cvt_candidates[] = {
-        "/opt/local/bin/cvt",
-        "/opt/X11/bin/cvt",
-        NULL,
-    };
-    static const char *const gtf_candidates[] = {
-        "/opt/local/bin/gtf",
-        "/opt/X11/bin/gtf",
-        NULL,
-    };
-    static const int refresh_rates[] = {60, 50, 40, 30, 20, 15};
-    int preferred_refresh = (int)preferred_refresh_hz;
-    int ordered_refresh_rates[1 + (int)(sizeof(refresh_rates) / sizeof(refresh_rates[0]))];
-    size_t ordered_refresh_count = 0;
+    uint32_t refresh = preferred_refresh_hz;
+    double pixclk;
+    uint32_t htotal, vtotal;
 
-    if (preferred_refresh > 0) {
-        ordered_refresh_rates[ordered_refresh_count++] = preferred_refresh;
+    for (;;) {
+        htotal = width + 160;
+        vtotal = height + 36;
+        pixclk = (double)htotal * (double)vtotal * (double)refresh / 1000000.0;
+        
+        if (pixclk <= RENDER_SERVER_MAX_PIXEL_CLOCK_MHZ || refresh <= 30) {
+            break;
+        }
+        refresh = 30;
     }
 
-    for (size_t i = 0; i < sizeof(refresh_rates) / sizeof(refresh_rates[0]); ++i) {
-        if (refresh_rates[i] == preferred_refresh) {
-            continue;
-        }
-        ordered_refresh_rates[ordered_refresh_count++] = refresh_rates[i];
+    snprintf(mode_name_out, mode_name_out_size, "%ux%u_%u.00", width, height, refresh);
+    snprintf(modeline_out, modeline_out_size,
+             "Modeline \"%s\"  %.2f  %u %u %u %u  %u %u %u %u -hsync +vsync",
+             mode_name_out, pixclk,
+             width, width + 40, width + 80, width + 160,
+             height, height + 3, height + 6, height + 36);
+
+    if (actual_refresh_hz_out != NULL) {
+        *actual_refresh_hz_out = refresh;
     }
 
-    /* Prefer non-reduced timings first. Some dummy-driver setups accept a
-     * reduced-blanking modeline under the clock ceiling and then Xorg rejects
-     * it, so keep those as a fallback. */
-    for (size_t candidate_index = 0; cvt_candidates[candidate_index] != NULL; ++candidate_index) {
-        if (!render_server_file_is_executable(cvt_candidates[candidate_index])) {
-            continue;
-        }
-
-        for (size_t refresh_index = 0; refresh_index < ordered_refresh_count; ++refresh_index) {
-            int refresh_rate = ordered_refresh_rates[refresh_index];
-            double max_pixel_clock_mhz = RENDER_SERVER_MAX_PIXEL_CLOCK_MHZ;
-            char command[PATH_MAX + 96];
-            if (snprintf(command,
-                         sizeof(command),
-                         "\"%s\" %u %u %d 2>/dev/null",
-                         cvt_candidates[candidate_index],
-                         width,
-                         height,
-                         refresh_rate) >= (int)sizeof(command)) {
-                continue;
-            }
-
-            FILE *pipe = popen(command, "r");
-            if (pipe == NULL) {
-                continue;
-            }
-
-            char line[512];
-            int result = 1;
-            while (fgets(line, sizeof(line), pipe) != NULL) {
-                char *modeline = strstr(line, "Modeline ");
-                if (modeline == NULL) {
-                    continue;
-                }
-
-                char *newline = strchr(modeline, '\n');
-                if (newline != NULL) {
-                    *newline = '\0';
-                }
-
-                char *quote_start = strchr(modeline, '"');
-                if (quote_start == NULL) {
-                    break;
-                }
-
-                char *quote_end = strchr(quote_start + 1, '"');
-                if (quote_end == NULL) {
-                    break;
-                }
-
-                char *clock_start = quote_end + 1;
-                while (*clock_start == ' ' || *clock_start == '\t') {
-                    ++clock_start;
-                }
-
-                char *clock_end = NULL;
-                double pixel_clock = strtod(clock_start, &clock_end);
-                if (clock_end == clock_start || pixel_clock > max_pixel_clock_mhz) {
-                    break;
-                }
-
-                size_t mode_name_len = (size_t)(quote_end - (quote_start + 1));
-                if (mode_name_len == 0 || mode_name_len >= mode_name_out_size) {
-                    break;
-                }
-
-                memcpy(mode_name_out, quote_start + 1, mode_name_len);
-                mode_name_out[mode_name_len] = '\0';
-
-                if (snprintf(modeline_out, modeline_out_size, "%s", modeline) >=
-                    (int)modeline_out_size) {
-                    break;
-                }
-
-                result = 0;
-                break;
-            }
-
-            pclose(pipe);
-            if (result == 0) {
-                if (actual_refresh_hz_out != NULL) {
-                    *actual_refresh_hz_out = (uint32_t)refresh_rate;
-                }
-                return 0;
-            }
-        }
-    }
-
-    for (size_t candidate_index = 0; gtf_candidates[candidate_index] != NULL; ++candidate_index) {
-        if (!render_server_file_is_executable(gtf_candidates[candidate_index])) {
-            continue;
-        }
-
-        for (size_t refresh_index = 0; refresh_index < ordered_refresh_count; ++refresh_index) {
-            int refresh_rate = ordered_refresh_rates[refresh_index];
-            double max_pixel_clock_mhz = RENDER_SERVER_MAX_PIXEL_CLOCK_MHZ;
-
-            char command[PATH_MAX + 96];
-            if (snprintf(command,
-                         sizeof(command),
-                         "\"%s\" %u %u %d 2>/dev/null",
-                         gtf_candidates[candidate_index],
-                         width,
-                         height,
-                         refresh_rate) >= (int)sizeof(command)) {
-                continue;
-            }
-
-            FILE *pipe = popen(command, "r");
-            if (pipe == NULL) {
-                continue;
-            }
-
-            char line[512];
-            int result = 1;
-            while (fgets(line, sizeof(line), pipe) != NULL) {
-                char *modeline = strstr(line, "Modeline ");
-                if (modeline == NULL) {
-                    continue;
-                }
-
-                char *newline = strchr(modeline, '\n');
-                if (newline != NULL) {
-                    *newline = '\0';
-                }
-
-                char *quote_start = strchr(modeline, '"');
-                if (quote_start == NULL) {
-                    break;
-                }
-
-                char *quote_end = strchr(quote_start + 1, '"');
-                if (quote_end == NULL) {
-                    break;
-                }
-
-                char *clock_start = quote_end + 1;
-                while (*clock_start == ' ' || *clock_start == '\t') {
-                    ++clock_start;
-                }
-
-                char *clock_end = NULL;
-                double pixel_clock = strtod(clock_start, &clock_end);
-                if (clock_end == clock_start || pixel_clock > max_pixel_clock_mhz) {
-                    break;
-                }
-
-                size_t mode_name_len = (size_t)(quote_end - (quote_start + 1));
-                if (mode_name_len == 0 || mode_name_len >= mode_name_out_size) {
-                    break;
-                }
-
-                memcpy(mode_name_out, quote_start + 1, mode_name_len);
-                mode_name_out[mode_name_len] = '\0';
-
-                if (snprintf(modeline_out, modeline_out_size, "%s", modeline) >=
-                    (int)modeline_out_size) {
-                    break;
-                }
-
-                result = 0;
-                break;
-            }
-
-            pclose(pipe);
-            if (result == 0) {
-                if (actual_refresh_hz_out != NULL) {
-                    *actual_refresh_hz_out = (uint32_t)refresh_rate;
-                }
-                return 0;
-            }
-        }
-    }
-
-    for (size_t candidate_index = 0; cvt_candidates[candidate_index] != NULL; ++candidate_index) {
-        if (!render_server_file_is_executable(cvt_candidates[candidate_index])) {
-            continue;
-        }
-
-        for (size_t refresh_index = 0; refresh_index < ordered_refresh_count; ++refresh_index) {
-            int refresh_rate = ordered_refresh_rates[refresh_index];
-            double max_pixel_clock_mhz = RENDER_SERVER_MAX_PIXEL_CLOCK_MHZ;
-            char command[PATH_MAX + 96];
-            if (snprintf(command,
-                         sizeof(command),
-                         "\"%s\" -r %u %u %d 2>/dev/null",
-                         cvt_candidates[candidate_index],
-                         width,
-                         height,
-                         refresh_rate) >= (int)sizeof(command)) {
-                continue;
-            }
-
-            FILE *pipe = popen(command, "r");
-            if (pipe == NULL) {
-                continue;
-            }
-
-            char line[512];
-            int result = 1;
-            while (fgets(line, sizeof(line), pipe) != NULL) {
-                char *modeline = strstr(line, "Modeline ");
-                if (modeline == NULL) {
-                    continue;
-                }
-
-                char *newline = strchr(modeline, '\n');
-                if (newline != NULL) {
-                    *newline = '\0';
-                }
-
-                char *quote_start = strchr(modeline, '"');
-                if (quote_start == NULL) {
-                    break;
-                }
-
-                char *quote_end = strchr(quote_start + 1, '"');
-                if (quote_end == NULL) {
-                    break;
-                }
-
-                char *clock_start = quote_end + 1;
-                while (*clock_start == ' ' || *clock_start == '\t') {
-                    ++clock_start;
-                }
-
-                char *clock_end = NULL;
-                double pixel_clock = strtod(clock_start, &clock_end);
-                if (clock_end == clock_start || pixel_clock > max_pixel_clock_mhz) {
-                    break;
-                }
-
-                size_t mode_name_len = (size_t)(quote_end - (quote_start + 1));
-                if (mode_name_len == 0 || mode_name_len >= mode_name_out_size) {
-                    break;
-                }
-
-                memcpy(mode_name_out, quote_start + 1, mode_name_len);
-                mode_name_out[mode_name_len] = '\0';
-
-                if (snprintf(modeline_out, modeline_out_size, "%s", modeline) >=
-                    (int)modeline_out_size) {
-                    break;
-                }
-
-                result = 0;
-                break;
-            }
-
-            pclose(pipe);
-            if (result == 0) {
-                if (actual_refresh_hz_out != NULL) {
-                    *actual_refresh_hz_out = (uint32_t)refresh_rate;
-                }
-                return 0;
-            }
-        }
-    }
-
-    fprintf(stderr,
-            "[RenderServer] failed to generate an Xorg modeline for %ux%u at %uHz\n",
-            width,
-            height,
-            preferred_refresh_hz);
-    return 1;
+    return 0;
 }
 
 static int render_server_write_xorg_config(XServerState *server,
@@ -536,7 +275,7 @@ static int render_server_write_xorg_config(XServerState *server,
             "Section \"Device\"\n"
             "    Identifier \"DummyDevice\"\n"
             "    Driver \"dummy\"\n"
-            "    VideoRam 512000\n"
+            "    VideoRam 1024000\n"
             "EndSection\n"
             "\n"
             "Section \"Screen\"\n"
@@ -547,13 +286,10 @@ static int render_server_write_xorg_config(XServerState *server,
             "    SubSection \"Display\"\n"
             "        Depth 24\n"
             "        Modes \"%s\"\n"
-            "        Virtual %u %u\n"
             "    EndSubSection\n"
             "EndSection\n",
             modeline,
-            mode_name,
-            width,
-            height);
+            mode_name);
 
     if (fclose(config) != 0) {
         fprintf(stderr, "[RenderServer] failed to finalize the Xorg config: %s\n", strerror(errno));
@@ -564,7 +300,6 @@ static int render_server_write_xorg_config(XServerState *server,
 
     server->width = (uint16_t)width;
     server->height = (uint16_t)height;
-    server->refresh_hz = actual_refresh_hz ? actual_refresh_hz : refresh_hz;
     return 0;
 }
 
@@ -896,6 +631,20 @@ static int render_server_claim_window_manager(XServerState *server)
     return 0;
 }
 
+/* Subscribe to PointerMotion on the root so we can track the cursor position
+ * for software rendering.  In external-WM mode the root event mask is owned
+ * by bwm, so this may fail silently — we still get MotionNotify via the
+ * cached cursor position updated from event loop. */
+static void render_server_subscribe_pointer_motion(XServerState *server)
+{
+    uint32_t mask = XCB_EVENT_MASK_POINTER_MOTION;
+    xcb_change_window_attributes(server->connection,
+                                 server->screen->root,
+                                 XCB_CW_EVENT_MASK,
+                                 &mask);
+    xcb_flush(server->connection);
+}
+
 static void render_server_handle_map_request(XServerState *server, const xcb_map_request_event_t *event)
 {
     uint32_t border_width = 0;
@@ -941,7 +690,8 @@ static void render_server_handle_configure_request(XServerState *server,
     xcb_configure_window(server->connection, event->window, event->value_mask, values);
 }
 
-static void render_server_drain_x11_events(XServerState *server)
+static void render_server_drain_x11_events(XServerState           *server,
+                                           RenderServerCompositor *compositor)
 {
     for (;;) {
         xcb_generic_event_t *event = xcb_poll_for_event(server->connection);
@@ -949,13 +699,52 @@ static void render_server_drain_x11_events(XServerState *server)
             break;
         }
 
-        switch (event->response_type & 0x7F) {
+        if (render_server_compositor_handle_event(compositor,
+                                                  server->connection,
+                                                  event)) {
+            free(event);
+            continue;
+        }
+
+        uint8_t type = event->response_type & 0x7Fu;
+        switch (type) {
             case XCB_MAP_REQUEST:
-                render_server_handle_map_request(server, (const xcb_map_request_event_t *)event);
+                render_server_handle_map_request(server,
+                                                 (const xcb_map_request_event_t *)event);
+                /* A new window appeared — re-sync the tree. */
+                render_server_compositor_invalidate_tree(compositor);
                 break;
             case XCB_CONFIGURE_REQUEST:
                 render_server_handle_configure_request(server,
                                                        (const xcb_configure_request_event_t *)event);
+                /* Window geometry may have changed. */
+                render_server_compositor_invalidate_tree(compositor);
+                break;
+            case XCB_UNMAP_NOTIFY:
+            case XCB_DESTROY_NOTIFY:
+            case XCB_MAP_NOTIFY:
+                render_server_compositor_invalidate_tree(compositor);
+                break;
+            case XCB_CONFIGURE_NOTIFY: {
+                /* Update the affected entry's geometry directly rather than
+                 * invalidating the whole tree — cursor_win moves every frame
+                 * and a full xcb_query_tree per frame defeats the caching. */
+                const xcb_configure_notify_event_t *cn =
+                    (const xcb_configure_notify_event_t *)event;
+                render_server_compositor_update_geometry(compositor,
+                                                         cn->window,
+                                                         cn->x, cn->y,
+                                                         cn->width, cn->height);
+                break;
+            }
+            case XCB_MOTION_NOTIFY:
+                /* Update cached cursor position (no need to re-query per-frame). */
+                {
+                    const xcb_motion_notify_event_t *mn =
+                        (const xcb_motion_notify_event_t *)event;
+                    server->cursor_x = mn->root_x;
+                    server->cursor_y = mn->root_y;
+                }
                 break;
             default:
                 break;
@@ -1009,11 +798,15 @@ static void render_server_stop_xorg(XServerState *server, bool keep_log)
     }
 }
 
-static int render_server_start_xorg(RenderState *state, XServerState *server)
+static int render_server_start_xorg(RenderState *state, XServerState *server,
+                                    RenderServerCompositor *compositor)
 {
     memset(server, 0, sizeof(*server));
     server->xorg_pid = -1;
     server->composite_enabled = false;
+    /* Default cursor to center of screen (will be updated via MotionNotify). */
+    server->cursor_x = -1;
+    server->cursor_y = -1;
 
     if (render_server_find_xorg(server->xorg_path, sizeof(server->xorg_path)) != 0) {
         return 1;
@@ -1048,7 +841,13 @@ static int render_server_start_xorg(RenderState *state, XServerState *server)
     uint32_t preferred_refresh_hz = state->displayInfo.refreshHz ? state->displayInfo.refreshHz
                                                                  : RENDER_SERVER_DEFAULT_REFRESH_HZ;
 
-    if (render_server_write_xorg_config(server, width, height, preferred_refresh_hz) != 0) {
+    server->refresh_hz = preferred_refresh_hz;
+
+    /* Write Xorg config using an artificially low refresh rate (30Hz) to
+     * guarantee the modeline pixel clock stays under the dummy driver's
+     * hardcoded 300MHz limit, even at very high resolutions.
+     * The compositor's render loop ignores this and uses server->refresh_hz. */
+    if (render_server_write_xorg_config(server, width, height, 30) != 0) {
         return 1;
     }
 
@@ -1072,6 +871,14 @@ static int render_server_start_xorg(RenderState *state, XServerState *server)
                 server->display_name);
     }
 
+    /* Set up XDamage so the compositor can skip re-fetching unmodified windows. */
+    if (server->composite_enabled && compositor != NULL) {
+        render_server_compositor_setup_damage(compositor, server->connection);
+    }
+
+    /* Subscribe to MotionNotify events for efficient cursor tracking. */
+    render_server_subscribe_pointer_motion(server);
+
     if (setenv("DISPLAY", server->display_name, 1) != 0) {
         fprintf(stderr, "[RenderServer] failed to export DISPLAY=%s\n", server->display_name);
         return 1;
@@ -1090,7 +897,7 @@ static int render_server_start_xorg(RenderState *state, XServerState *server)
 
 static int render_server_event_loop(RenderState *state,
                                     XServerState *server,
-                                    const RenderServerCompositor *compositor)
+                                    RenderServerCompositor *compositor)
 {
     int x11_fd = xcb_get_file_descriptor(server->connection);
     if (x11_fd < 0) {
@@ -1146,7 +953,7 @@ static int render_server_event_loop(RenderState *state,
                 fprintf(stderr, "[RenderServer] the X11 connection terminated unexpectedly\n");
                 return 1;
             }
-            render_server_drain_x11_events(server);
+            render_server_drain_x11_events(server, compositor);
         }
 
         if (waitpid(server->xorg_pid, NULL, WNOHANG) == server->xorg_pid) {
@@ -1167,7 +974,9 @@ static int render_server_event_loop(RenderState *state,
                                             compositor,
                                             server->composite_enabled,
                                             server->width,
-                                            server->height) != 0) {
+                                            server->height,
+                                            server->cursor_x,
+                                            server->cursor_y) != 0) {
                 return 1;
             }
 
@@ -1213,11 +1022,7 @@ int render_server_run(void)
     bool keep_log = false;
     int result = 0;
 
-    if (render_server_start_xorg(state, &server) != 0) {
-        keep_log = true;
-        if (server.log_path[0] != '\0') {
-            fprintf(stderr, "[RenderServer] Xorg log preserved at %s\n", server.log_path);
-        }
+    if (render_server_start_xorg(state, &server, compositor) != 0) {
         render_server_stop_xorg(&server, keep_log);
         render_server_compositor_destroy(compositor);
         screenproc_destroy(state);

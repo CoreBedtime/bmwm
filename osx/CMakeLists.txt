@@ -16,6 +16,7 @@ find_library(XCB_LIBRARY xcb
         /opt/local/lib
 )
 find_library(XCB_COMPOSITE_LIBRARY xcb-composite HINTS /opt/local/lib REQUIRED)
+find_library(XCB_DAMAGE_LIBRARY    xcb-damage    HINTS /opt/local/lib REQUIRED)
 find_path(LUAJIT_INCLUDE_DIR luajit.h
     HINTS
         /opt/local/include
@@ -174,6 +175,7 @@ target_link_libraries(LibRenderServer PUBLIC
     FramebufferLib
     "${XCB_LIBRARY}"
     "${XCB_COMPOSITE_LIBRARY}"
+    "${XCB_DAMAGE_LIBRARY}"
 )
 
 set_target_properties(LibRenderServer PROPERTIES OUTPUT_NAME "RenderServer")

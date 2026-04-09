@@ -25,6 +25,7 @@ LOADER="${ROOT_DIR}/.build/ninja/osx/loader-macos"
 LOG_FILE="${LOG_FILE:-/tmp/applicator-mainuserspace.log}"
 GUI_UID=501
 BWM_CONFIG="${BWM_CONFIG:-${ROOT_DIR}/dev-config/bwm.lua}"
+XTERM="${XTERM:-/opt/X11/bin/xterm}"
 
 if [ "$#" -lt 1 ]; then
     printf 'Usage: %s /path/to/App.app|/path/to/binary [...]\n' "${BASH_SOURCE[0]}" >&2
@@ -96,6 +97,9 @@ fi
 
 printf 'start-applaunch-bwm.sh: using DISPLAY=%s\n' "$DISPLAY_VALUE"
 
+launchctl asuser "$GUI_UID" launchctl setenv DISPLAY "$DISPLAY_VALUE"
+launchctl setenv DISPLAY "$DISPLAY_VALUE"
+
 sudo BWM_CONFIG="$BWM_CONFIG" DISPLAY="$DISPLAY_VALUE" "$BWM" &
 BWM_PID=$!
 
@@ -104,6 +108,12 @@ if ! kill -0 "$BWM_PID" >/dev/null 2>&1; then
     printf 'start-applaunch-bwm.sh: bwm exited unexpectedly\n' >&2
     tail -n 40 "$LOG_FILE" >&2 || true
     exit 1
+fi
+
+# Launch xterm for visual debugging (optional, can be disabled via XTERM=)
+if [ -n "${XTERM:-}" ] && [ -x "$XTERM" ]; then
+    printf 'start-applaunch-bwm.sh: launching xterm for debugging\n'
+    launchctl asuser "$GUI_UID" env DISPLAY="$DISPLAY_VALUE" "$XTERM" -geometry 80x24+10+10 &
 fi
 
 LAUNCH_PIDS=()
