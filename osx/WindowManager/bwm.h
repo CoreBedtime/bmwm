@@ -41,6 +41,12 @@ struct BwmConfig {
     uint32_t root_color;
     uint32_t titlebar_color;
     uint32_t titlebar_focus_color;
+
+    bool     has_x11_width;
+    uint16_t x11_width;
+
+    bool     has_x11_height;
+    uint16_t x11_height;
 };
 
 /* -------------------------------------------------------------------------
@@ -159,7 +165,7 @@ void bwm_set_focus(BwmWM *wm, BwmClient *c);
 int bwm_run(BwmWM *wm);
 
 /* -------------------------------------------------------------------------
- * input.c — IOHIDManager mouse + keyboard
+ * input.c — IOHIDManager mouse + touch + keyboard
  * ---------------------------------------------------------------------- */
 
 int  bwm_input_start(BwmWM *wm);

@@ -27,6 +27,14 @@ void bwm_load_config(BwmWM *wm, const char *path)
     if (config.has_titlebar_focus_color) {
         wm->config.titlebar_focus_color = config.titlebar_focus_color;
     }
+    if (config.has_x11_width) {
+        wm->config.x11_width = config.x11_width;
+        wm->config.has_x11_width = true;
+    }
+    if (config.has_x11_height) {
+        wm->config.x11_height = config.x11_height;
+        wm->config.has_x11_height = true;
+    }
 }
 
 void bwm_apply_root_background(BwmWM *wm)

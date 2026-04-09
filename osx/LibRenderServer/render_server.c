@@ -19,6 +19,7 @@
 
 #include "iomfb.h"
 #include "compositing.h"
+#include "lua_config.h"
 
 #define RENDER_SERVER_MODEL_REFRESH_HZ 60
 #define RENDER_SERVER_DISPLAYFD 99
@@ -40,6 +41,11 @@ typedef struct {
     char              xorg_path[PATH_MAX];
     char              config_path[PATH_MAX];
     char              log_path[PATH_MAX];
+
+    bool              width_override;
+    uint16_t          width_override_value;
+    bool              height_override;
+    uint16_t          height_override_value;
 } XServerState;
 
 static volatile sig_atomic_t g_render_server_running = 1;
@@ -901,6 +907,25 @@ static int render_server_start_xorg(RenderState *state, XServerState *server)
 
     uint32_t width = (uint32_t)state->surfaceSize.width;
     uint32_t height = (uint32_t)state->surfaceSize.height;
+
+    ApplicatorLuaConfig config;
+    applicator_lua_config_init(&config);
+    const char *config_path = getenv("BWM_CONFIG");
+    if (config_path != NULL && *config_path != '\0') {
+        applicator_lua_config_load_file(config_path, &config, "[RenderServer]");
+    }
+
+    if (config.has_x11_width) {
+        width = config.x11_width;
+        server->width_override = true;
+        server->width_override_value = config.x11_width;
+    }
+    if (config.has_x11_height) {
+        height = config.x11_height;
+        server->height_override = true;
+        server->height_override_value = config.x11_height;
+    }
+
     if (width == 0 || height == 0) {
         fprintf(stderr, "[RenderServer] invalid framebuffer size for Xorg startup\n");
         return 1;

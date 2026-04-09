@@ -163,6 +163,22 @@ static int applicator_lua_shadow_color(lua_State *L)
     return 0;
 }
 
+static int applicator_lua_x11_width(lua_State *L)
+{
+    ApplicatorLuaConfig *config = applicator_lua_config_from_upvalue(L);
+    config->x11_width = applicator_lua_check_u16(L, 1, "x11_width must fit in uint16");
+    config->has_x11_width = true;
+    return 0;
+}
+
+static int applicator_lua_x11_height(lua_State *L)
+{
+    ApplicatorLuaConfig *config = applicator_lua_config_from_upvalue(L);
+    config->x11_height = applicator_lua_check_u16(L, 1, "x11_height must fit in uint16");
+    config->has_x11_height = true;
+    return 0;
+}
+
 static void applicator_lua_register_function(lua_State *L,
                                              ApplicatorLuaConfig *config,
                                              const char *name,
@@ -188,6 +204,8 @@ static void applicator_lua_register_api(lua_State *L, ApplicatorLuaConfig *confi
     applicator_lua_register_function(L, config, "shadow_spread", applicator_lua_shadow_spread);
     applicator_lua_register_function(L, config, "shadow_opacity", applicator_lua_shadow_opacity);
     applicator_lua_register_function(L, config, "shadow_color", applicator_lua_shadow_color);
+    applicator_lua_register_function(L, config, "x11_width", applicator_lua_x11_width);
+    applicator_lua_register_function(L, config, "x11_height", applicator_lua_x11_height);
 }
 
 static bool applicator_lua_load_u32_field(lua_State *L, int table_index, const char *name, uint32_t *dst)
@@ -367,6 +385,13 @@ static void applicator_lua_apply_legacy_table(lua_State *L,
     }
     if (applicator_lua_load_u32_field(L, table_index, "shadow_color", &config->shadow_color)) {
         config->has_shadow_color = true;
+    }
+
+    if (applicator_lua_load_u16_field(L, table_index, "x11_width", &config->x11_width)) {
+        config->has_x11_width = true;
+    }
+    if (applicator_lua_load_u16_field(L, table_index, "x11_height", &config->x11_height)) {
+        config->has_x11_height = true;
     }
 
     applicator_lua_apply_legacy_shadow_table(L, table_index, config);

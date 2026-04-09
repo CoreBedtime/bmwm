@@ -23,6 +23,7 @@ APP_LAUNCH="${ROOT_DIR}/.build/ninja/osx/AppLaunch"
 BWM="${ROOT_DIR}/.build/ninja/osx/bwm"
 LOADER="${ROOT_DIR}/.build/ninja/osx/loader-macos"
 LOG_FILE="${LOG_FILE:-/tmp/applicator-mainuserspace.log}"
+GUI_UID=501
 
 if [ "$#" -lt 1 ]; then
     printf 'Usage: %s /path/to/App.app|/path/to/binary [...]\n' "${BASH_SOURCE[0]}" >&2
@@ -106,7 +107,8 @@ fi
 
 LAUNCH_PIDS=()
 for app in "${APPS[@]}"; do
-    DISPLAY="$DISPLAY_VALUE" "$APP_LAUNCH" "$app" &
+    # AppLaunch needs the GUI user's bootstrap namespace.
+    launchctl asuser "$GUI_UID" env DISPLAY="$DISPLAY_VALUE" "$APP_LAUNCH" "$app" &
     LAUNCH_PIDS+=($!)
 done
 

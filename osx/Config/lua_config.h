@@ -35,6 +35,12 @@ struct ApplicatorLuaConfig {
 
     bool     has_shadow_color;
     uint32_t shadow_color;
+
+    bool     has_x11_width;
+    uint16_t x11_width;
+
+    bool     has_x11_height;
+    uint16_t x11_height;
 };
 
 void applicator_lua_config_init(ApplicatorLuaConfig *config);
