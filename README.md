@@ -13,16 +13,31 @@ x11_width(1920)
 x11_height(1080)
 ```
 
-The legacy table form also accepts `x11_width` and `x11_height` fields:
-
-```lua
-return {
-    x11_width = 1920,
-    x11_height = 1080,
-}
-```
-
 This is still an active prototype. The X server bridge is intentionally minimal and is aimed at proving the IOMFB integration path, not providing a complete desktop environment.
+
+## Dependencies
+
+Applicator currently depends on:
+
+- macOS with the Xcode Command Line Tools
+- CMake 3.20 or newer
+- Ninja
+- Python 3
+- `codesign`
+- `launchctl`
+- `/usr/libexec/PlistBuddy`
+- a `frida-compile` executable on `PATH`
+- a Frida core devkit, either unpacked locally through `FRIDA_CORE_DEVKIT_ROOT` or downloaded from Frida releases
+- XQuartz, for `/opt/X11/bin/Xorg`, `/opt/X11/bin/cvt`, and `/opt/X11/bin/gtf`
+
+The build resolves these third-party libraries and headers directly:
+
+- LuaJIT (`luajit.h`, `libluajit-5.1`)
+- XCB (`xcb/xcb.h`, `xcb`, `xcb-composite`, `xcb-xtest`, `xcb-render`, `xcb-xfixes`)
+- X11 (`X11`)
+- Xcursor (`Xcursor`)
+
+Use MacPorts! install the ports that provide the libraries above. The CMake files currently look in `/opt/local/include` and `/opt/local/lib` for the third-party dependencies.
 
 ## Building
 
@@ -30,27 +45,11 @@ This is still an active prototype. The X server bridge is intentionally minimal 
 ./quick.sh
 ```
 
-Requires CMake, Ninja, and the Xcode command line tools.
-
-```bash
-sudo port install cmake
-sudo port install ninja
-sudo port install xorg-libxcb
-sudo port install xorg-libXcomposite
-sudo port install luajit
-```
-
 To build `AppLaunch`, CMake will use `FRIDA_CORE_DEVKIT_ROOT` if you point it at an unpacked Frida devkit. Otherwise it downloads `frida-core-devkit-${FRIDA_CORE_VERSION}-${FRIDA_CORE_PLATFORM}.tar.xz` from the GitHub Frida releases page. You can override `FRIDA_CORE_VERSION` and `FRIDA_CORE_PLATFORM` from the CMake cache if you need a different release or architecture.
 
 ## Runtime Dependencies
 
-The current render-server bridge expects these X11 tools to be available locally:
-
-- `/opt/X11/bin/Xorg`
-- `/opt/X11/bin/cvt`
-- `/opt/X11/bin/gtf`
-
-These binaries come from the XQuartz package, not MacPorts. The code uses them to start a headless X server and to generate a mode line that matches the active display size.
+The current render-server bridge expects the XQuartz tools above to be present locally. The code uses them to start a headless X server and to generate a mode line that matches the active display size.
 
 ## Running (Will prompt for sudo)
 

@@ -24,6 +24,7 @@ BWM="${ROOT_DIR}/.build/ninja/osx/bwm"
 LOADER="${ROOT_DIR}/.build/ninja/osx/loader-macos"
 LOG_FILE="${LOG_FILE:-/tmp/applicator-mainuserspace.log}"
 GUI_UID=501
+BWM_CONFIG="${BWM_CONFIG:-${ROOT_DIR}/dev-config/bwm.lua}"
 
 if [ "$#" -lt 1 ]; then
     printf 'Usage: %s /path/to/App.app|/path/to/binary [...]\n' "${BASH_SOURCE[0]}" >&2
@@ -50,7 +51,7 @@ fi
 sudo rm -f "$LOG_FILE"
 
 touch "$LOG_FILE"
-sudo env BWM_CONFIG="${ROOT_DIR}/dev-config/bwm.lua" RENDER_SERVER_EXTERNAL_WM=1 "$LOADER" 2>&1 | tee -a "$LOG_FILE" &
+sudo env BWM_CONFIG="$BWM_CONFIG" RENDER_SERVER_EXTERNAL_WM=1 "$LOADER" 2>&1 | tee -a "$LOG_FILE" &
 LOADER_PID=$!
 BWM_PID=""
 APP_LAUNCH_PID=""
@@ -95,7 +96,7 @@ fi
 
 printf 'start-applaunch-bwm.sh: using DISPLAY=%s\n' "$DISPLAY_VALUE"
 
-sudo BWM_CONFIG="${ROOT_DIR}/dev-config/bwm.lua" DISPLAY="$DISPLAY_VALUE" "$BWM" &
+sudo BWM_CONFIG="$BWM_CONFIG" DISPLAY="$DISPLAY_VALUE" "$BWM" &
 BWM_PID=$!
 
 sleep 1
