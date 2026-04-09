@@ -83,7 +83,13 @@ static bool is_external_transport(NSString *transport)
            [upper isEqualToString:@"DVI"]  ||
            [upper isEqualToString:@"VGA"]  ||
            [upper isEqualToString:@"DISPLAYPORT"] ||
-           [upper isEqualToString:@"THUNDERBOLT"];
+           [upper isEqualToString:@"THUNDERBOLT"] ||
+           [upper isEqualToString:@"USB-C"] ||
+           [upper isEqualToString:@"USB C"] ||
+           [upper isEqualToString:@"USBC"] ||
+           [upper isEqualToString:@"TYPE-C"] ||
+           [upper isEqualToString:@"TYPE C"] ||
+           [upper isEqualToString:@"TYPEC"];
 }
 
 static NSString *transport_from_property(id property)
@@ -132,6 +138,8 @@ static NSString *display_name_from_attributes(id property)
 
 static uint32_t dictionary_u32(NSDictionary *dict, NSString *key, uint32_t fallback);
 static uint32_t timing_active_dimension(NSDictionary *timing, NSString *axis);
+static NSDictionary *timing_dict_from_property(id property);
+static id copy_property_obj(IMFBApi *api, IOMobileFramebufferRef display, CFStringRef key);
 
 static CGSize geometry_from_display_attributes(id property)
 {
@@ -146,8 +154,14 @@ static CGSize geometry_from_display_attributes(id property)
     if (!height) height = dictionary_u32(dict, @"PixelHeight", 0);
     if (!height) height = dictionary_u32(dict, @"DisplayHeight", 0);
 
-    if ((!width || !height) && [dict[@"PreferredTimingElements"] isKindOfClass:[NSDictionary class]]) {
-        NSDictionary *timing = (NSDictionary *)dict[@"PreferredTimingElements"];
+    if ((!width || !height) && dict[@"PreferredTimingElements"]) {
+        NSDictionary *timing = timing_dict_from_property(dict[@"PreferredTimingElements"]);
+        if (!width) width = timing_active_dimension(timing, @"HorizontalAttributes");
+        if (!height) height = timing_active_dimension(timing, @"VerticalAttributes");
+    }
+
+    if ((!width || !height) && dict[@"TimingElements"]) {
+        NSDictionary *timing = timing_dict_from_property(dict[@"TimingElements"]);
         if (!width) width = timing_active_dimension(timing, @"HorizontalAttributes");
         if (!height) height = timing_active_dimension(timing, @"VerticalAttributes");
     }
@@ -168,10 +182,55 @@ static uint32_t dictionary_u32(NSDictionary *dict, NSString *key, uint32_t fallb
     return number ? number.unsignedIntValue : fallback;
 }
 
+static double dictionary_double(NSDictionary *dict, NSString *key, double fallback)
+{
+    NSNumber *number = dictionary_number(dict, key);
+    return number ? number.doubleValue : fallback;
+}
+
 static int dictionary_i32(NSDictionary *dict, NSString *key, int fallback)
 {
     NSNumber *number = dictionary_number(dict, key);
     return number ? number.intValue : fallback;
+}
+
+static NSDictionary *timing_dict_from_property(id property)
+{
+    if ([property isKindOfClass:[NSArray class]]) {
+        for (id entry in (NSArray *)property) {
+            NSDictionary *timing = timing_dict_from_property(entry);
+            if (timing) return timing;
+        }
+        return nil;
+    }
+
+    if (![property isKindOfClass:[NSDictionary class]]) return nil;
+
+    NSDictionary *dict = (NSDictionary *)property;
+    id timingElements = dict[@"TimingElements"];
+    NSDictionary *timing = timing_dict_from_property(timingElements);
+    if (timing) return timing;
+
+    id preferred = dict[@"PreferredTimingElements"];
+    timing = timing_dict_from_property(preferred);
+    if (timing) return timing;
+
+    id current = dict[@"CurrentTimingElements"];
+    timing = timing_dict_from_property(current);
+    if (timing) return timing;
+
+    if (dict[@"HorizontalAttributes"] || dict[@"VerticalAttributes"])
+        return dict;
+
+    return nil;
+}
+
+static double timing_fixed_rate(NSDictionary *attrs, NSString *key)
+{
+    if (![attrs isKindOfClass:[NSDictionary class]]) return 0.0;
+
+    uint32_t fixed_rate = dictionary_u32(attrs, key, 0);
+    return fixed_rate > 0 ? ((double)fixed_rate / 65536.0) : 0.0;
 }
 
 static uint32_t timing_active_dimension(NSDictionary *timing, NSString *axis)
@@ -181,6 +240,107 @@ static uint32_t timing_active_dimension(NSDictionary *timing, NSString *axis)
         return dictionary_u32(attrs, @"Active", 0);
     }
     return 0;
+}
+
+static double timing_refresh_rate(NSDictionary *timing)
+{
+    if (![timing isKindOfClass:[NSDictionary class]]) return 0.0;
+
+    double refresh = dictionary_double(timing, @"IOFBRefreshRate", 0.0);
+    if (refresh > 0.0) return refresh;
+
+    refresh = dictionary_double(timing, @"RefreshRate", 0.0);
+    if (refresh > 0.0) return refresh;
+
+    refresh = dictionary_double(timing, @"Refresh", 0.0);
+    if (refresh > 0.0) return refresh;
+
+    refresh = dictionary_double(timing, @"VerticalRefreshRate", 0.0);
+    if (refresh > 0.0) return refresh;
+
+    id vertical_attrs = timing[@"VerticalAttributes"];
+    if ([vertical_attrs isKindOfClass:[NSDictionary class]]) {
+        refresh = timing_fixed_rate((NSDictionary *)vertical_attrs, @"PreciseSyncRate");
+        if (refresh > 0.0) return refresh;
+
+        refresh = timing_fixed_rate((NSDictionary *)vertical_attrs, @"SyncRate");
+        if (refresh > 0.0) return refresh;
+    }
+
+    return 0.0;
+}
+
+static double timing_property_refresh_max(id property)
+{
+    double best = 0.0;
+
+    if (property == nil) {
+        return best;
+    }
+
+    if ([property isKindOfClass:[NSArray class]]) {
+        for (id entry in (NSArray *)property) {
+            double candidate = timing_property_refresh_max(entry);
+            if (candidate > best) {
+                best = candidate;
+            }
+        }
+        return best;
+    }
+
+    if ([property isKindOfClass:[NSDictionary class]]) {
+        NSDictionary *dict = (NSDictionary *)property;
+        double candidate = timing_refresh_rate(dict);
+        if (candidate > best) {
+            best = candidate;
+        }
+
+        for (NSString *key in @[ @"TimingElements", @"PreferredTimingElements", @"CurrentTimingElements" ]) {
+            candidate = timing_property_refresh_max(dict[key]);
+            if (candidate > best) {
+                best = candidate;
+            }
+        }
+        return best;
+    }
+
+    if ([property respondsToSelector:@selector(doubleValue)]) {
+        return [property doubleValue];
+    }
+
+    return best;
+}
+
+static bool timing_refresh_matches_target(double refresh, double target_refresh)
+{
+    if (refresh <= 0.0 || target_refresh <= 0.0) return false;
+
+    double delta = refresh - target_refresh;
+    if (delta < 0.0) delta = -delta;
+    return delta <= 0.5;
+}
+
+static double display_refresh_rate(IMFBApi *api, IOMobileFramebufferRef display)
+{
+    if (!api || !display) return 0.0;
+
+    double best = 0.0;
+    for (id keyObj in @[
+             @"PreferredTimingElements",
+             @"CurrentTimingElements",
+             @"TimingElements",
+             @"DisplayAttributes",
+             @"IOFBRefreshRate",
+         ]) {
+        CFStringRef key = (__bridge CFStringRef)keyObj;
+        id property = copy_property_obj(api, display, key);
+        double refresh = timing_property_refresh_max(property);
+        if (refresh > best) {
+            best = refresh;
+        }
+    }
+
+    return best;
 }
 
 static NSDictionary *find_mode_dict_by_id(NSArray *items, uint32_t target_id)
@@ -268,35 +428,94 @@ static long long record_selection_score(const IMFBDisplayRecord *record)
     return score;
 }
 
+static bool record_is_preferred_external(const IMFBDisplayRecord *record)
+{
+    if (!record || !record->isExternal) return false;
+    return record->transport[0] != '\0' ||
+           record->name[0] != '\0' ||
+           record->mode.valid;
+}
+
 static bool record_has_geometry(const IMFBDisplayRecord *record);
 static bool activate_record(IMFBApi *api, IMFBDisplayRecord *record);
 
-static NSDictionary *choose_timing_dict(NSArray *timings, uint32_t preferred_id)
+static NSDictionary *choose_timing_dict(NSArray *timings,
+                                        uint32_t preferred_id,
+                                        double preferred_refresh_hz)
 {
-    if (preferred_id) {
-        NSDictionary *dict = find_mode_dict_by_id(timings, preferred_id);
-        if (dict) return dict;
-    }
-
     uint32_t forced_id = env_u32("SCREENPROC_FORCE_TIMING", 0);
     if (forced_id) {
         NSDictionary *dict = find_mode_dict_by_id(timings, forced_id);
         if (dict) return dict;
     }
 
+    if (preferred_id) {
+        NSDictionary *dict = find_mode_dict_by_id(timings, preferred_id);
+        if (dict) return dict;
+    }
+
     NSDictionary *best = nil;
-    long long best_score = LLONG_MIN;
+    double best_refresh = 0.0;
+    int best_score = INT_MIN;
+    long long best_area = LLONG_MIN;
+    bool best_has_refresh = false;
+    // Prefer a refresh rate that matches the render loop, then fall back to
+    // vendor score and active area when the mode metadata does not expose it.
     for (id obj in timings) {
         if (![obj isKindOfClass:[NSDictionary class]]) continue;
 
         NSDictionary *timing = (NSDictionary *)obj;
-        int score = dictionary_i32(timing, @"Score", 0);
-        uint32_t width = timing_active_dimension(timing, @"HorizontalAttributes");
-        uint32_t height = timing_active_dimension(timing, @"VerticalAttributes");
-        long long composite = (long long)score * 1000000LL + (long long)width * (long long)height;
-        if (!best || composite > best_score) {
+        int candidate_score = dictionary_i32(timing, @"Score", 0);
+        long long candidate_area =
+            (long long)timing_active_dimension(timing, @"HorizontalAttributes") *
+            (long long)timing_active_dimension(timing, @"VerticalAttributes");
+        double candidate_refresh = timing_refresh_rate(timing);
+        bool candidate_has_refresh = candidate_refresh > 0.0;
+
+        if (!best) {
             best = timing;
-            best_score = composite;
+            best_refresh = candidate_refresh;
+            best_score = candidate_score;
+            best_area = candidate_area;
+            best_has_refresh = candidate_has_refresh;
+            continue;
+        }
+
+        bool take = false;
+        if (preferred_refresh_hz > 0.0) {
+            if (candidate_has_refresh != best_has_refresh) {
+                take = candidate_has_refresh;
+            } else if (candidate_has_refresh) {
+                double candidate_delta = candidate_refresh - preferred_refresh_hz;
+                if (candidate_delta < 0.0) candidate_delta = -candidate_delta;
+                double best_delta = best_refresh - preferred_refresh_hz;
+                if (best_delta < 0.0) best_delta = -best_delta;
+                if (candidate_delta != best_delta) {
+                    take = candidate_delta < best_delta;
+                }
+            }
+        } else {
+            if (candidate_has_refresh != best_has_refresh) {
+                take = candidate_has_refresh;
+            } else if (candidate_has_refresh && candidate_refresh != best_refresh) {
+                take = candidate_refresh > best_refresh;
+            }
+        }
+
+        if (!take) {
+            if (candidate_score != best_score) {
+                take = candidate_score > best_score;
+            } else if (candidate_area != best_area) {
+                take = candidate_area > best_area;
+            }
+        }
+
+        if (take) {
+            best = timing;
+            best_refresh = candidate_refresh;
+            best_score = candidate_score;
+            best_area = candidate_area;
+            best_has_refresh = candidate_has_refresh;
         }
     }
 
@@ -448,18 +667,19 @@ CGSize imfb_display_area(IMFBApi *api, IOMobileFramebufferRef display)
 
 static void populate_display_record(IMFBApi                 *api,
                                     IOMobileFramebufferRef   display,
-                                    IOMobileFramebufferRef   main_display,
+                                    bool                     is_main,
                                     IMFBDisplayRecord       *record)
 {
     memset(record, 0, sizeof(*record));
     record->framebuffer = display;
     record->service = api->GetServiceObject ? api->GetServiceObject(display) : IO_OBJECT_NULL;
-    record->isMain = (display && main_display == display);
+    record->isMain = is_main;
 
     id transportProperty = copy_property_obj(api, display, CFSTR("Transport"));
     id uuidProperty = copy_property_obj(api, display, CFSTR("IOMFBUUID"));
     id containerProperty = copy_property_obj(api, display, CFSTR("DisplayContainerID"));
     id displayAttributes = copy_property_obj(api, display, CFSTR("DisplayAttributes"));
+    id preferredTimingProperty = copy_property_obj(api, display, CFSTR("PreferredTimingElements"));
     id hdcpHoover = copy_property_obj(api, display, CFSTR("hdcp-hoover-protocol"));
 
     NSString *transport = transport_from_property(transportProperty);
@@ -478,9 +698,21 @@ static void populate_display_record(IMFBApi                 *api,
         record->displayArea = attributeGeometry;
     }
 
-    record->isExternal = is_external_transport(transport) ||
-                         (!record->isMain && [hdcpHoover respondsToSelector:@selector(boolValue)] &&
-                          [hdcpHoover boolValue]);
+    double refreshHz = display_refresh_rate(api, display);
+    if (refreshHz <= 0.0) {
+        refreshHz = timing_refresh_rate(timing_dict_from_property(preferredTimingProperty));
+    }
+    if (refreshHz <= 0.0) {
+        refreshHz = timing_refresh_rate(timing_dict_from_property(displayAttributes));
+    }
+    if (refreshHz > 0.0) {
+        record->refreshHz = (uint32_t)(refreshHz + 0.5);
+    }
+
+    record->isExternal = !record->isMain &&
+                         (is_external_transport(transport) ||
+                          ([hdcpHoover respondsToSelector:@selector(boolValue)] &&
+                           [hdcpHoover boolValue]));
     record->displayDevice = record->isExternal ? 2u : (record->isMain ? 1u : 0u);
 }
 
@@ -516,11 +748,11 @@ static size_t collect_displays(IMFBApi *api, IMFBDisplayRecord *records, size_t 
                     }
                     if (duplicate) continue;
 
-                    populate_display_record(api, display, NULL, &records[count]);
+                    populate_display_record(api, display, is_main, &records[count]);
                     records[count].service = service;
-                    records[count].isMain = is_main;
-                    if (display_type == 1)
+                    if (display_type == 1 && !records[count].isMain) {
                         records[count].isExternal = true;
+                    }
                     records[count].displayDevice =
                         records[count].isExternal ? 2u : (records[count].isMain ? 1u : 0u);
                     count++;
@@ -550,7 +782,10 @@ static size_t collect_displays(IMFBApi *api, IMFBDisplayRecord *records, size_t 
                 }
                 if (duplicate) continue;
 
-                populate_display_record(api, display, NULL, &records[count++]);
+                populate_display_record(api, display, is_main, &records[count]);
+                records[count].displayDevice =
+                    records[count].isExternal ? 2u : (records[count].isMain ? 1u : 0u);
+                count++;
             }
             CFRelease(displays);
         }
@@ -561,7 +796,7 @@ static size_t collect_displays(IMFBApi *api, IMFBDisplayRecord *records, size_t 
         IOMobileFramebufferRef display = NULL;
         if (api->GetMainDisplay(&display) == kIOReturnSuccess && display) {
             main_display = display;
-            populate_display_record(api, display, main_display, &records[count++]);
+            populate_display_record(api, display, true, &records[count++]);
         }
     }
 
@@ -580,8 +815,12 @@ static size_t collect_displays(IMFBApi *api, IMFBDisplayRecord *records, size_t 
                     break;
                 }
             }
-            if (!duplicate)
-                populate_display_record(api, display, main_display, &records[count++]);
+            if (!duplicate) {
+                populate_display_record(api, display, display == main_display, &records[count]);
+                records[count].displayDevice =
+                    records[count].isExternal ? 2u : (records[count].isMain ? 1u : 0u);
+                count++;
+            }
         }
     }
 
@@ -641,7 +880,7 @@ static void choose_primary_display(IMFBDisplayRecord *records,
             any_score = score;
         }
 
-        if (record->isExternal && score > external_score) {
+        if (record_is_preferred_external(record) && score > external_score) {
             external = record;
             external_score = score;
         }
@@ -734,7 +973,7 @@ static void log_record_state(const char *prefix, const IMFBDisplayRecord *record
 
     CGSize size = record_geometry(record);
     fprintf(stderr,
-            "[screenproc] %s service=0x%x main=%d external=%d transport=%s name=%s size=%.0fx%.0f timing=%u color=%u depth=%u hdr=%d\n",
+            "[screenproc] %s service=0x%x main=%d external=%d transport=%s name=%s size=%.0fx%.0f refresh=%uHz timing=%u color=%u depth=%u hdr=%d\n",
             prefix,
             record->service,
             record->isMain,
@@ -743,6 +982,7 @@ static void log_record_state(const char *prefix, const IMFBDisplayRecord *record
             record->name,
             size.width,
             size.height,
+            record->refreshHz,
             record->mode.timingID,
             record->mode.colorID,
             record->mode.colorDepth,
@@ -795,12 +1035,6 @@ static bool configure_digital_mode(IMFBApi *api, IMFBDisplayRecord *record)
         return record_has_geometry(record);
     }
 
-    if (!record->isMain) {
-        record->isExternal = true;
-        if (record->displayDevice == 0)
-            record->displayDevice = 2;
-    }
-
     NSArray *colors = (__bridge NSArray *)color_modes_ref;
     NSArray *timings = (__bridge NSArray *)timing_modes_ref;
 
@@ -825,7 +1059,23 @@ static bool configure_digital_mode(IMFBApi *api, IMFBDisplayRecord *record)
                                        &timing_first);
     }
 
-    NSDictionary *timing = choose_timing_dict(timings, current_timing_id);
+    double target_refresh_hz = record->refreshHz > 0 ? (double)record->refreshHz : 0.0;
+    if (target_refresh_hz <= 0.0 && have_current && current_timing_id) {
+        NSDictionary *current_timing = find_mode_dict_by_id(timings, current_timing_id);
+        target_refresh_hz = timing_refresh_rate(current_timing);
+    }
+
+    uint32_t preferred_timing_id = 0;
+    if (have_current && current_timing_id) {
+        NSDictionary *current_timing = find_mode_dict_by_id(timings, current_timing_id);
+        double current_refresh = timing_refresh_rate(current_timing);
+        if (current_refresh > 0.0 &&
+            timing_refresh_matches_target(current_refresh, target_refresh_hz)) {
+            preferred_timing_id = current_timing_id;
+        }
+    }
+
+    NSDictionary *timing = choose_timing_dict(timings, preferred_timing_id, target_refresh_hz);
     NSDictionary *color  = choose_color_dict(colors, timing, current_color_id);
     if (!timing || !color) {
         fprintf(stderr, "[screenproc] failed to choose external timing/color mode\n");
@@ -848,6 +1098,16 @@ static bool configure_digital_mode(IMFBApi *api, IMFBDisplayRecord *record)
     record->mode.hdr = !color_mode_supports_bgra(color);
     record->mode.width = timing_active_dimension(timing, @"HorizontalAttributes");
     record->mode.height = timing_active_dimension(timing, @"VerticalAttributes");
+
+    double chosen_refresh = timing_refresh_rate(timing);
+    fprintf(stderr,
+            "[screenproc] selected timing=%u refresh=%.2fHz target=%.2fHz color=%u depth=%u hdr=%d\n",
+            chosen_timing,
+            chosen_refresh,
+            target_refresh_hz,
+            chosen_color,
+            record->mode.colorDepth,
+            record->mode.hdr);
 
     if (api->SetDisplayDevice) {
         IOMobileFramebufferReturn device_r =
@@ -882,7 +1142,7 @@ static bool activate_record(IMFBApi *api, IMFBDisplayRecord *record)
 {
     if (!record || !record->framebuffer) return false;
 
-    if (record->isExternal || !record->isMain)
+    if (record->isExternal)
         return configure_digital_mode(api, record);
 
     refresh_record_geometry(api, record);
@@ -899,7 +1159,7 @@ static void append_legacy_displays(IMFBApi           *api,
         IOMobileFramebufferReturn main_r = api->GetMainDisplay(&main_display);
         if (main_r == kIOReturnSuccess && main_display) {
             IMFBDisplayRecord record;
-            populate_display_record(api, main_display, main_display, &record);
+            populate_display_record(api, main_display, true, &record);
             append_active_record(api, &record, active_out, active_cap, active_count);
         } else {
             fprintf(stderr, "[screenproc] GetMainDisplay: 0x%x display=%p\n",
@@ -913,7 +1173,7 @@ static void append_legacy_displays(IMFBApi           *api,
             api->GetSecondaryDisplay(&secondary_display);
         if (secondary_r == kIOReturnSuccess && secondary_display) {
             IMFBDisplayRecord record;
-            populate_display_record(api, secondary_display, main_display, &record);
+            populate_display_record(api, secondary_display, secondary_display == main_display, &record);
             append_active_record(api, &record, active_out, active_cap, active_count);
         } else {
             fprintf(stderr, "[screenproc] GetSecondaryDisplay: 0x%x display=%p\n",
@@ -995,6 +1255,12 @@ bool imfb_open(IMFBApi             *api,
     choose_primary_display(active_out, active_count, &selected);
     if (!selected || !selected->framebuffer)
         return false;
+
+    if (selected != &active_out[0]) {
+        active_out[0] = *selected;
+    }
+    selected = &active_out[0];
+    active_count = 1;
 
     *primary_out = *selected;
     *active_count_out = active_count;

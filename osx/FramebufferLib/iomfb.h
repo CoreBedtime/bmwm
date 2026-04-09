@@ -89,6 +89,7 @@ typedef struct {
     CGSize                 displaySize;
     CGSize                 displayArea;
     IMFBDigitalMode        mode;
+    uint32_t               refreshHz;
 } IMFBDisplayRecord;
 
 typedef struct {
@@ -111,6 +112,7 @@ typedef struct {
     size_t                 activeDisplayCount;
     IMFBSurfaceSpec        surfaceSpec;
     IOSurfaceRef           surfaces[2];
+    CGContextRef           surfaceContexts[2];
     bool                   ownsSurface[2];
     CGRect                 frame;
     CGSize                 surfaceSize;

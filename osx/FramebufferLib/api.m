@@ -55,6 +55,47 @@ static IOSurfaceRef create_surface(const IMFBSurfaceSpec *spec)
     return surface;
 }
 
+static CGContextRef create_surface_context(IOSurfaceRef surface,
+                                           size_t width,
+                                           size_t height)
+{
+    if (surface == NULL || width == 0 || height == 0) {
+        return NULL;
+    }
+
+    IOSurfaceLock(surface, 0, NULL);
+    uint8_t *baseAddress = (uint8_t *)IOSurfaceGetBaseAddress(surface);
+    size_t bytesPerRow = IOSurfaceGetBytesPerRow(surface);
+    if (baseAddress == NULL || bytesPerRow < (width * 4u)) {
+        IOSurfaceUnlock(surface, 0, NULL);
+        return NULL;
+    }
+
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    if (colorSpace == NULL) {
+        IOSurfaceUnlock(surface, 0, NULL);
+        return NULL;
+    }
+
+    CGContextRef ctx = CGBitmapContextCreate(baseAddress,
+                                             width,
+                                             height,
+                                             8,
+                                             bytesPerRow,
+                                             colorSpace,
+                                             kCGImageAlphaPremultipliedFirst |
+                                                 kCGBitmapByteOrder32Little);
+    CGColorSpaceRelease(colorSpace);
+    IOSurfaceUnlock(surface, 0, NULL);
+    if (ctx == NULL) {
+        return NULL;
+    }
+
+    CGContextTranslateCTM(ctx, 0.0, (CGFloat)height);
+    CGContextScaleCTM(ctx, 1.0, -1.0);
+    return ctx;
+}
+
 // ---------------------------------------------------------------------------
 // Renderer
 // ---------------------------------------------------------------------------
@@ -125,6 +166,13 @@ RenderState *screenproc_create(void)
             return NULL;
         }
 
+        fprintf(stderr,
+                "[screenproc] selected display refresh=%uHz timing=%u size=%.0fx%.0f\n",
+                state->displayInfo.refreshHz,
+                state->displayInfo.mode.timingID,
+                state->displayInfo.displaySize.width,
+                state->displayInfo.displaySize.height);
+
         state->display = state->displayInfo.framebuffer;
         if (!state->display) {
             fprintf(stderr, "[screenproc] selected display record has no framebuffer\n");
@@ -170,6 +218,18 @@ RenderState *screenproc_create(void)
         state->surfaces[1]    = backSurface;
         state->ownsSurface[1] = true;
 
+        state->surfaceContexts[0] = create_surface_context(frontSurface,
+                                                           state->surfaceSpec.width,
+                                                           state->surfaceSpec.height);
+        state->surfaceContexts[1] = create_surface_context(backSurface,
+                                                           state->surfaceSpec.width,
+                                                           state->surfaceSpec.height);
+        if (!state->surfaceContexts[0] || !state->surfaceContexts[1]) {
+            fprintf(stderr, "[screenproc] failed to create surface contexts\n");
+            screenproc_destroy(state);
+            return NULL;
+        }
+
         CGRect frame = CGRectMake(0, 0, size.width, size.height);
         state->frame = frame;
         state->surfaceSize = size;
@@ -213,6 +273,11 @@ void screenproc_destroy(RenderState *state)
     }
 
     for (int i = 0; i < 2; i++) {
+        if (state->surfaceContexts[i]) {
+            CGContextRelease(state->surfaceContexts[i]);
+        }
+        state->surfaceContexts[i] = NULL;
+
         if (state->ownsSurface[i] && state->surfaces[i]) {
             CFRelease(state->surfaces[i]);
         }

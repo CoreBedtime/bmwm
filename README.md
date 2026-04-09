@@ -4,23 +4,23 @@ Applicator is a macOS-focused experiment around IOMFB-backed rendering, an X11 r
 
 ## Current State
 
-The repo currently builds four binaries:
+The shared `BWM_CONFIG` Lua file is API-based, and the loader also accepts a legacy returned table. It calls setters such as `background_image(...)`, `background_color(...)`, `titlebar_color(...)`, `titlebar_focus_color(...)`, and the compositor shadow setters (`shadow_enabled(...)`, `shadow_offset(...)`, `shadow_x_offset(...)`, `shadow_y_offset(...)`, `shadow_spread(...)`, `shadow_opacity(...)`, `shadow_color(...)`).
 
-- `loader-macos`, which patches the runtime environment and launches `MainUserspace`
-- `MainUserspace`, which opens the local IOMFB display stack through `FramebufferLib`, creates IOSurfaces for presentation, and starts the local X server/render path
-- `bwm`, a standalone reparenting X11 window manager used when the external-WM path is enabled
-- `AppLaunch`, a Frida Core launcher that spawns a `.app` bundle executable and injects it before resume
+The same config can also pin the X11 root size the render server starts with. Use `x11_width(...)` and `x11_height(...)` if you want the X server to run at a fixed geometry instead of inheriting the selected framebuffer size.
 
-The current runtime flow is:
+```lua
+x11_width(1920)
+x11_height(1080)
+```
 
-- the loader runs first
-- `MainUserspace` brings up the local X server and render path
-- `RENDER_SERVER_EXTERNAL_WM=1` tells the render server to skip claiming `SubstructureRedirect`
-- `bwm` takes over window management in that mode
+The legacy table form also accepts `x11_width` and `x11_height` fields:
 
-Wallpaper rendering now lives in the render-server backdrop path. `background_image` is applied there, and `bwm` only applies the solid root color fallback.
-
-The shared `BWM_CONFIG` Lua file is API-based now. Instead of returning a table, it calls setters such as `background_image(...)`, `background_color(...)`, `titlebar_color(...)`, `titlebar_focus_color(...)`, and the compositor shadow setters (`shadow_enabled(...)`, `shadow_offset(...)`, `shadow_x_offset(...)`, `shadow_y_offset(...)`, `shadow_spread(...)`, `shadow_opacity(...)`, `shadow_color(...)`).
+```lua
+return {
+    x11_width = 1920,
+    x11_height = 1080,
+}
+```
 
 This is still an active prototype. The X server bridge is intentionally minimal and is aimed at proving the IOMFB integration path, not providing a complete desktop environment.
 

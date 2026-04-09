@@ -1,0 +1,8 @@
+- metal rendering
+- repaswn windowserver with `-virtualonly` flag instead of removal, need to make a wrapper.
+- multi monitor / iomfb fixups
+- resize windows
+- widget system
+- work on scriping api
+- pretty up the compositor
+- fix any and all bug

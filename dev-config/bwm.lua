@@ -1,8 +1,8 @@
 local source = debug.getinfo(1, "S").source
 local config_dir = source:match("^@(.*/)") or "./"
 
-x11_width = 1800
-x11_height = 1169
+x11_width(1800)
+x11_height(1169)
 background_image(config_dir .. "wall.png")
 
 -- x11_width = 3440

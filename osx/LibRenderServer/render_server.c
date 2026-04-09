@@ -21,7 +21,6 @@
 #include "compositing.h"
 #include "lua_config.h"
 
-#define RENDER_SERVER_MODEL_REFRESH_HZ 60
 #define RENDER_SERVER_DISPLAYFD 99
 #define RENDER_SERVER_MAX_PIXEL_CLOCK_MHZ 300.0
 #define RENDER_SERVER_DEFAULT_REFRESH_HZ 60
@@ -170,6 +169,8 @@ static int render_server_requested_display(void)
 
 static int render_server_generate_modeline(uint32_t width,
                                            uint32_t height,
+                                           uint32_t preferred_refresh_hz,
+                                           uint32_t *actual_refresh_hz_out,
                                            char *mode_name_out,
                                            size_t mode_name_out_size,
                                            char *modeline_out,
@@ -186,108 +187,40 @@ static int render_server_generate_modeline(uint32_t width,
         NULL,
     };
     static const int refresh_rates[] = {60, 50, 40, 30, 20, 15};
+    int preferred_refresh = (int)preferred_refresh_hz;
+    int ordered_refresh_rates[1 + (int)(sizeof(refresh_rates) / sizeof(refresh_rates[0]))];
+    size_t ordered_refresh_count = 0;
 
+    if (preferred_refresh > 0) {
+        ordered_refresh_rates[ordered_refresh_count++] = preferred_refresh;
+    }
+
+    for (size_t i = 0; i < sizeof(refresh_rates) / sizeof(refresh_rates[0]); ++i) {
+        if (refresh_rates[i] == preferred_refresh) {
+            continue;
+        }
+        ordered_refresh_rates[ordered_refresh_count++] = refresh_rates[i];
+    }
+
+    /* Prefer non-reduced timings first. Some dummy-driver setups accept a
+     * reduced-blanking modeline under the clock ceiling and then Xorg rejects
+     * it, so keep those as a fallback. */
     for (size_t candidate_index = 0; cvt_candidates[candidate_index] != NULL; ++candidate_index) {
         if (!render_server_file_is_executable(cvt_candidates[candidate_index])) {
             continue;
         }
 
-        for (size_t refresh_index = 0; refresh_index < sizeof(refresh_rates) / sizeof(refresh_rates[0]); ++refresh_index) {
-            for (int reduced = 0; reduced < 2; ++reduced) {
-                if (reduced != 0 && refresh_rates[refresh_index] != RENDER_SERVER_MODEL_REFRESH_HZ) {
-                    continue;
-                }
-
-                char command[PATH_MAX + 96];
-                if (snprintf(command,
-                             sizeof(command),
-                             "\"%s\" %s%u %u %d 2>/dev/null",
-                             cvt_candidates[candidate_index],
-                             reduced != 0 ? "-r " : "",
-                             width,
-                             height,
-                             refresh_rates[refresh_index]) >= (int)sizeof(command)) {
-                    continue;
-                }
-
-                FILE *pipe = popen(command, "r");
-                if (pipe == NULL) {
-                    continue;
-                }
-
-                char line[512];
-                int result = 1;
-                while (fgets(line, sizeof(line), pipe) != NULL) {
-                    char *modeline = strstr(line, "Modeline ");
-                    if (modeline == NULL) {
-                        continue;
-                    }
-
-                    char *newline = strchr(modeline, '\n');
-                    if (newline != NULL) {
-                        *newline = '\0';
-                    }
-
-                    char *quote_start = strchr(modeline, '"');
-                    if (quote_start == NULL) {
-                        break;
-                    }
-
-                    char *quote_end = strchr(quote_start + 1, '"');
-                    if (quote_end == NULL) {
-                        break;
-                    }
-
-                    char *clock_start = quote_end + 1;
-                    while (*clock_start == ' ' || *clock_start == '\t') {
-                        ++clock_start;
-                    }
-
-                    char *clock_end = NULL;
-                    double pixel_clock = strtod(clock_start, &clock_end);
-                    if (clock_end == clock_start || pixel_clock > RENDER_SERVER_MAX_PIXEL_CLOCK_MHZ) {
-                        break;
-                    }
-
-                    size_t mode_name_len = (size_t)(quote_end - (quote_start + 1));
-                    if (mode_name_len == 0 || mode_name_len >= mode_name_out_size) {
-                        break;
-                    }
-
-                    memcpy(mode_name_out, quote_start + 1, mode_name_len);
-                    mode_name_out[mode_name_len] = '\0';
-
-                    if (snprintf(modeline_out, modeline_out_size, "%s", modeline) >=
-                        (int)modeline_out_size) {
-                        break;
-                    }
-
-                    result = 0;
-                    break;
-                }
-
-                pclose(pipe);
-                if (result == 0) {
-                    return 0;
-                }
-            }
-        }
-    }
-
-    for (size_t candidate_index = 0; gtf_candidates[candidate_index] != NULL; ++candidate_index) {
-        if (!render_server_file_is_executable(gtf_candidates[candidate_index])) {
-            continue;
-        }
-
-        for (size_t refresh_index = 0; refresh_index < sizeof(refresh_rates) / sizeof(refresh_rates[0]); ++refresh_index) {
+        for (size_t refresh_index = 0; refresh_index < ordered_refresh_count; ++refresh_index) {
+            int refresh_rate = ordered_refresh_rates[refresh_index];
+            double max_pixel_clock_mhz = RENDER_SERVER_MAX_PIXEL_CLOCK_MHZ;
             char command[PATH_MAX + 96];
             if (snprintf(command,
                          sizeof(command),
                          "\"%s\" %u %u %d 2>/dev/null",
-                         gtf_candidates[candidate_index],
+                         cvt_candidates[candidate_index],
                          width,
                          height,
-                         refresh_rates[refresh_index]) >= (int)sizeof(command)) {
+                         refresh_rate) >= (int)sizeof(command)) {
                 continue;
             }
 
@@ -326,7 +259,7 @@ static int render_server_generate_modeline(uint32_t width,
 
                 char *clock_end = NULL;
                 double pixel_clock = strtod(clock_start, &clock_end);
-                if (clock_end == clock_start || pixel_clock > RENDER_SERVER_MAX_PIXEL_CLOCK_MHZ) {
+                if (clock_end == clock_start || pixel_clock > max_pixel_clock_mhz) {
                     break;
                 }
 
@@ -349,26 +282,207 @@ static int render_server_generate_modeline(uint32_t width,
 
             pclose(pipe);
             if (result == 0) {
+                if (actual_refresh_hz_out != NULL) {
+                    *actual_refresh_hz_out = (uint32_t)refresh_rate;
+                }
+                return 0;
+            }
+        }
+    }
+
+    for (size_t candidate_index = 0; gtf_candidates[candidate_index] != NULL; ++candidate_index) {
+        if (!render_server_file_is_executable(gtf_candidates[candidate_index])) {
+            continue;
+        }
+
+        for (size_t refresh_index = 0; refresh_index < ordered_refresh_count; ++refresh_index) {
+            int refresh_rate = ordered_refresh_rates[refresh_index];
+            double max_pixel_clock_mhz = RENDER_SERVER_MAX_PIXEL_CLOCK_MHZ;
+
+            char command[PATH_MAX + 96];
+            if (snprintf(command,
+                         sizeof(command),
+                         "\"%s\" %u %u %d 2>/dev/null",
+                         gtf_candidates[candidate_index],
+                         width,
+                         height,
+                         refresh_rate) >= (int)sizeof(command)) {
+                continue;
+            }
+
+            FILE *pipe = popen(command, "r");
+            if (pipe == NULL) {
+                continue;
+            }
+
+            char line[512];
+            int result = 1;
+            while (fgets(line, sizeof(line), pipe) != NULL) {
+                char *modeline = strstr(line, "Modeline ");
+                if (modeline == NULL) {
+                    continue;
+                }
+
+                char *newline = strchr(modeline, '\n');
+                if (newline != NULL) {
+                    *newline = '\0';
+                }
+
+                char *quote_start = strchr(modeline, '"');
+                if (quote_start == NULL) {
+                    break;
+                }
+
+                char *quote_end = strchr(quote_start + 1, '"');
+                if (quote_end == NULL) {
+                    break;
+                }
+
+                char *clock_start = quote_end + 1;
+                while (*clock_start == ' ' || *clock_start == '\t') {
+                    ++clock_start;
+                }
+
+                char *clock_end = NULL;
+                double pixel_clock = strtod(clock_start, &clock_end);
+                if (clock_end == clock_start || pixel_clock > max_pixel_clock_mhz) {
+                    break;
+                }
+
+                size_t mode_name_len = (size_t)(quote_end - (quote_start + 1));
+                if (mode_name_len == 0 || mode_name_len >= mode_name_out_size) {
+                    break;
+                }
+
+                memcpy(mode_name_out, quote_start + 1, mode_name_len);
+                mode_name_out[mode_name_len] = '\0';
+
+                if (snprintf(modeline_out, modeline_out_size, "%s", modeline) >=
+                    (int)modeline_out_size) {
+                    break;
+                }
+
+                result = 0;
+                break;
+            }
+
+            pclose(pipe);
+            if (result == 0) {
+                if (actual_refresh_hz_out != NULL) {
+                    *actual_refresh_hz_out = (uint32_t)refresh_rate;
+                }
+                return 0;
+            }
+        }
+    }
+
+    for (size_t candidate_index = 0; cvt_candidates[candidate_index] != NULL; ++candidate_index) {
+        if (!render_server_file_is_executable(cvt_candidates[candidate_index])) {
+            continue;
+        }
+
+        for (size_t refresh_index = 0; refresh_index < ordered_refresh_count; ++refresh_index) {
+            int refresh_rate = ordered_refresh_rates[refresh_index];
+            double max_pixel_clock_mhz = RENDER_SERVER_MAX_PIXEL_CLOCK_MHZ;
+            char command[PATH_MAX + 96];
+            if (snprintf(command,
+                         sizeof(command),
+                         "\"%s\" -r %u %u %d 2>/dev/null",
+                         cvt_candidates[candidate_index],
+                         width,
+                         height,
+                         refresh_rate) >= (int)sizeof(command)) {
+                continue;
+            }
+
+            FILE *pipe = popen(command, "r");
+            if (pipe == NULL) {
+                continue;
+            }
+
+            char line[512];
+            int result = 1;
+            while (fgets(line, sizeof(line), pipe) != NULL) {
+                char *modeline = strstr(line, "Modeline ");
+                if (modeline == NULL) {
+                    continue;
+                }
+
+                char *newline = strchr(modeline, '\n');
+                if (newline != NULL) {
+                    *newline = '\0';
+                }
+
+                char *quote_start = strchr(modeline, '"');
+                if (quote_start == NULL) {
+                    break;
+                }
+
+                char *quote_end = strchr(quote_start + 1, '"');
+                if (quote_end == NULL) {
+                    break;
+                }
+
+                char *clock_start = quote_end + 1;
+                while (*clock_start == ' ' || *clock_start == '\t') {
+                    ++clock_start;
+                }
+
+                char *clock_end = NULL;
+                double pixel_clock = strtod(clock_start, &clock_end);
+                if (clock_end == clock_start || pixel_clock > max_pixel_clock_mhz) {
+                    break;
+                }
+
+                size_t mode_name_len = (size_t)(quote_end - (quote_start + 1));
+                if (mode_name_len == 0 || mode_name_len >= mode_name_out_size) {
+                    break;
+                }
+
+                memcpy(mode_name_out, quote_start + 1, mode_name_len);
+                mode_name_out[mode_name_len] = '\0';
+
+                if (snprintf(modeline_out, modeline_out_size, "%s", modeline) >=
+                    (int)modeline_out_size) {
+                    break;
+                }
+
+                result = 0;
+                break;
+            }
+
+            pclose(pipe);
+            if (result == 0) {
+                if (actual_refresh_hz_out != NULL) {
+                    *actual_refresh_hz_out = (uint32_t)refresh_rate;
+                }
                 return 0;
             }
         }
     }
 
     fprintf(stderr,
-            "[RenderServer] failed to generate an Xorg modeline for %ux%u\n",
+            "[RenderServer] failed to generate an Xorg modeline for %ux%u at %uHz\n",
             width,
-            height);
+            height,
+            preferred_refresh_hz);
     return 1;
 }
 
-static int render_server_write_xorg_config(XServerState *server, uint32_t width, uint32_t height)
+static int render_server_write_xorg_config(XServerState *server,
+                                           uint32_t width,
+                                           uint32_t height,
+                                           uint32_t refresh_hz)
 {
     char mode_name[128];
     char modeline[512];
     char config_template[] = "/tmp/applicator-render-server-XXXXXX";
+    uint32_t actual_refresh_hz = refresh_hz;
 
     if (render_server_generate_modeline(width,
                                         height,
+                                        refresh_hz,
+                                        &actual_refresh_hz,
                                         mode_name,
                                         sizeof(mode_name),
                                         modeline,
@@ -450,6 +564,7 @@ static int render_server_write_xorg_config(XServerState *server, uint32_t width,
 
     server->width = (uint16_t)width;
     server->height = (uint16_t)height;
+    server->refresh_hz = actual_refresh_hz ? actual_refresh_hz : refresh_hz;
     return 0;
 }
 
@@ -898,7 +1013,6 @@ static int render_server_start_xorg(RenderState *state, XServerState *server)
 {
     memset(server, 0, sizeof(*server));
     server->xorg_pid = -1;
-    server->refresh_hz = RENDER_SERVER_DEFAULT_REFRESH_HZ;
     server->composite_enabled = false;
 
     if (render_server_find_xorg(server->xorg_path, sizeof(server->xorg_path)) != 0) {
@@ -931,7 +1045,10 @@ static int render_server_start_xorg(RenderState *state, XServerState *server)
         return 1;
     }
 
-    if (render_server_write_xorg_config(server, width, height) != 0) {
+    uint32_t preferred_refresh_hz = state->displayInfo.refreshHz ? state->displayInfo.refreshHz
+                                                                 : RENDER_SERVER_DEFAULT_REFRESH_HZ;
+
+    if (render_server_write_xorg_config(server, width, height, preferred_refresh_hz) != 0) {
         return 1;
     }
 

@@ -6,7 +6,6 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreGraphics/CoreGraphics.h>
 #include <ImageIO/ImageIO.h>
-#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,8 +13,8 @@
 #include <xcb/composite.h>
 
 typedef struct {
-    int16_t  x;
-    int16_t  y;
+    int32_t  x;
+    int32_t  y;
     uint16_t w;
     uint16_t h;
 } RenderServerWindowRect;
@@ -36,138 +35,115 @@ typedef struct {
     uint16_t spread;
     uint8_t  opacity;
     uint32_t color;
+    CGColorRef cg_color;
 } RenderServerShadow;
+
+typedef struct {
+    int32_t  x;
+    int32_t  y;
+    uint16_t w;
+    uint16_t h;
+    xcb_window_t window;
+    RenderServerWindowRect rect;
+    bool viewable;
+    bool override_redirect;
+    bool image_requested;
+    xcb_get_window_attributes_cookie_t attributes_cookie;
+    xcb_get_geometry_cookie_t geometry_cookie;
+    xcb_pixmap_t pixmap;
+    xcb_get_image_cookie_t image_cookie;
+} RenderServerWindowSnapshot;
 
 struct RenderServerCompositor {
     RenderServerBackdrop backdrop;
     RenderServerShadow shadow;
 };
 
-static void render_server_blend_pixel(uint8_t *pixel,
-                                      uint8_t blue,
-                                      uint8_t green,
-                                      uint8_t red,
-                                      uint8_t alpha)
+static void render_server_release_shadow(RenderServerShadow *shadow)
 {
-    if (alpha == 0) {
+    if (shadow == NULL) {
         return;
     }
 
-    uint32_t inverse = 255u - (uint32_t)alpha;
-    pixel[0] = (uint8_t)(((uint32_t)blue  * alpha + (uint32_t)pixel[0] * inverse) / 255u);
-    pixel[1] = (uint8_t)(((uint32_t)green * alpha + (uint32_t)pixel[1] * inverse) / 255u);
-    pixel[2] = (uint8_t)(((uint32_t)red   * alpha + (uint32_t)pixel[2] * inverse) / 255u);
-    pixel[3] = 0xFF;
-}
-
-static void render_server_apply_shadow_pass(uint8_t *destination,
-                                            size_t destination_stride,
-                                            uint32_t buffer_width,
-                                            uint32_t buffer_height,
-                                            int32_t rect_x,
-                                            int32_t rect_y,
-                                            uint16_t rect_w,
-                                            uint16_t rect_h,
-                                            uint16_t spread,
-                                            uint8_t opacity,
-                                            uint32_t shadow_color)
-{
-    if (destination == NULL || rect_w == 0 || rect_h == 0 || spread == 0 || opacity == 0) {
-        return;
-    }
-
-    int32_t x0 = rect_x - (int32_t)spread;
-    int32_t y0 = rect_y - (int32_t)spread;
-    int32_t x1 = rect_x + (int32_t)rect_w + (int32_t)spread;
-    int32_t y1 = rect_y + (int32_t)rect_h + (int32_t)spread;
-
-    if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
-    if (x1 > (int32_t)buffer_width) x1 = (int32_t)buffer_width;
-    if (y1 > (int32_t)buffer_height) y1 = (int32_t)buffer_height;
-
-    const int32_t inner_left = rect_x;
-    const int32_t inner_top = rect_y;
-    const int32_t inner_right = rect_x + (int32_t)rect_w;
-    const int32_t inner_bottom = rect_y + (int32_t)rect_h;
-
-    const uint8_t color_alpha = (uint8_t)((shadow_color >> 24) & 0xFFu);
-    const uint8_t shadow_red = (uint8_t)((shadow_color >> 16) & 0xFFu);
-    const uint8_t shadow_green = (uint8_t)((shadow_color >> 8) & 0xFFu);
-    const uint8_t shadow_blue = (uint8_t)(shadow_color & 0xFFu);
-    const uint32_t max_alpha = ((uint32_t)opacity * (uint32_t)color_alpha) / 255u;
-    if (max_alpha == 0) {
-        return;
-    }
-
-    for (int32_t y = y0; y < y1; ++y) {
-        uint8_t *row = destination + ((size_t)y * destination_stride);
-
-        for (int32_t x = x0; x < x1; ++x) {
-            if (x >= inner_left && x < inner_right &&
-                y >= inner_top && y < inner_bottom) {
-                continue;
-            }
-
-            int32_t dx = 0;
-            if (x < inner_left) {
-                dx = inner_left - x;
-            } else if (x >= inner_right) {
-                dx = x - (inner_right - 1);
-            }
-
-            int32_t dy = 0;
-            if (y < inner_top) {
-                dy = inner_top - y;
-            } else if (y >= inner_bottom) {
-                dy = y - (inner_bottom - 1);
-            }
-
-            double distance = sqrt((double)(dx * dx + dy * dy));
-            if (distance >= (double)spread) {
-                continue;
-            }
-
-            double falloff = 1.0 - (distance / (double)spread);
-            uint8_t alpha = (uint8_t)((double)max_alpha * falloff * falloff);
-            if (alpha == 0) {
-                continue;
-            }
-
-            render_server_blend_pixel(row + ((size_t)x * 4u),
-                                      shadow_blue,
-                                      shadow_green,
-                                      shadow_red,
-                                      alpha);
-        }
+    if (shadow->cg_color != NULL) {
+        CGColorRelease(shadow->cg_color);
+        shadow->cg_color = NULL;
     }
 }
 
-static void render_server_apply_window_shadow(uint8_t *destination,
-                                             size_t destination_stride,
-                                             uint32_t buffer_width,
-                                             uint32_t buffer_height,
-                                             const RenderServerShadow *shadow,
-                                             int32_t x,
-                                             int32_t y,
-                                             uint16_t w,
-                                             uint16_t h)
+static bool render_server_prepare_shadow_color(RenderServerShadow *shadow)
 {
-    if (shadow == NULL || !shadow->enabled) {
+    if (shadow == NULL) {
+        return false;
+    }
+
+    render_server_release_shadow(shadow);
+    CGFloat components[4] = {
+        (CGFloat)((shadow->color >> 16) & 0xFFu) / 255.0,
+        (CGFloat)((shadow->color >> 8) & 0xFFu) / 255.0,
+        (CGFloat)(shadow->color & 0xFFu) / 255.0,
+        (CGFloat)((shadow->color >> 24) & 0xFFu) / 255.0,
+    };
+
+    CGColorSpaceRef color_space = CGColorSpaceCreateDeviceRGB();
+    if (color_space == NULL) {
+        return false;
+    }
+
+    shadow->cg_color = CGColorCreate(color_space, components);
+    CGColorSpaceRelease(color_space);
+    return shadow->cg_color != NULL;
+}
+
+static bool render_server_rect_intersects_bounds(const RenderServerWindowRect *rect,
+                                                 uint32_t buffer_width,
+                                                 uint32_t buffer_height)
+{
+    if (rect == NULL || rect->w == 0 || rect->h == 0) {
+        return false;
+    }
+
+    int32_t left = rect->x;
+    int32_t top = rect->y;
+    int32_t right = rect->x + (int32_t)rect->w;
+    int32_t bottom = rect->y + (int32_t)rect->h;
+
+    if (left < 0) {
+        left = 0;
+    }
+    if (top < 0) {
+        top = 0;
+    }
+    if (right > (int32_t)buffer_width) {
+        right = (int32_t)buffer_width;
+    }
+    if (bottom > (int32_t)buffer_height) {
+        bottom = (int32_t)buffer_height;
+    }
+
+    return right > left && bottom > top;
+}
+
+static void render_server_apply_window_shadow(CGContextRef ctx,
+                                              const RenderServerShadow *shadow,
+                                              int32_t x,
+                                              int32_t y,
+                                              uint16_t w,
+                                              uint16_t h)
+{
+    if (ctx == NULL || shadow == NULL || !shadow->enabled || shadow->cg_color == NULL ||
+        w == 0 || h == 0) {
         return;
     }
 
-    render_server_apply_shadow_pass(destination,
-                                    destination_stride,
-                                    buffer_width,
-                                    buffer_height,
-                                    x + shadow->x_offset,
-                                    y + shadow->y_offset,
-                                    w,
-                                    h,
-                                    shadow->spread,
-                                    shadow->opacity,
-                                    shadow->color);
+    CGContextSaveGState(ctx);
+    CGContextSetShadowWithColor(ctx,
+                                CGSizeMake((CGFloat)shadow->x_offset, (CGFloat)shadow->y_offset),
+                                (CGFloat)shadow->spread,
+                                shadow->cg_color);
+    CGContextSetFillColorWithColor(ctx, shadow->cg_color);
+    CGContextFillRect(ctx, CGRectMake((CGFloat)x, (CGFloat)y, (CGFloat)w, (CGFloat)h));
+    CGContextRestoreGState(ctx);
 }
 
 static void render_server_unpack_argb(uint32_t argb,
@@ -248,38 +224,40 @@ static bool render_server_load_compositor_config(const char *config_path,
 
     ApplicatorLuaConfig config;
     applicator_lua_config_init(&config);
-    if (!applicator_lua_config_load_file(config_path, &config, "[RenderServer]")) {
-        return true;
-    }
-
-    if (config.has_background_color) {
-        compositor->backdrop.background_color = config.background_color;
-    }
-    if (config.has_shadow_enabled) {
-        compositor->shadow.enabled = config.shadow_enabled;
-    }
-    if (config.has_shadow_x_offset) {
-        compositor->shadow.x_offset = config.shadow_x_offset;
-    }
-    if (config.has_shadow_y_offset) {
-        compositor->shadow.y_offset = config.shadow_y_offset;
-    }
-    if (config.has_shadow_spread) {
-        compositor->shadow.spread = config.shadow_spread;
-    }
-    if (config.has_shadow_opacity) {
-        compositor->shadow.opacity = config.shadow_opacity;
-    }
-    if (config.has_shadow_color) {
-        compositor->shadow.color = config.shadow_color;
-    }
-
-    if (config.has_background_image && config.background_image[0] != '\0') {
-        compositor->backdrop.background_image = render_server_load_image_from_path(config.background_image);
-        if (compositor->backdrop.background_image == NULL) {
-            fprintf(stderr, "[RenderServer] warning: could not load background image %s\n",
-                    config.background_image);
+    if (applicator_lua_config_load_file(config_path, &config, "[RenderServer]")) {
+        if (config.has_background_color) {
+            compositor->backdrop.background_color = config.background_color;
         }
+        if (config.has_shadow_enabled) {
+            compositor->shadow.enabled = config.shadow_enabled;
+        }
+        if (config.has_shadow_x_offset) {
+            compositor->shadow.x_offset = config.shadow_x_offset;
+        }
+        if (config.has_shadow_y_offset) {
+            compositor->shadow.y_offset = config.shadow_y_offset;
+        }
+        if (config.has_shadow_spread) {
+            compositor->shadow.spread = config.shadow_spread;
+        }
+        if (config.has_shadow_opacity) {
+            compositor->shadow.opacity = config.shadow_opacity;
+        }
+        if (config.has_shadow_color) {
+            compositor->shadow.color = config.shadow_color;
+        }
+
+        if (config.has_background_image && config.background_image[0] != '\0') {
+            compositor->backdrop.background_image = render_server_load_image_from_path(config.background_image);
+            if (compositor->backdrop.background_image == NULL) {
+                fprintf(stderr, "[RenderServer] warning: could not load background image %s\n",
+                        config.background_image);
+            }
+        }
+    }
+
+    if (!render_server_prepare_shadow_color(&compositor->shadow)) {
+        fprintf(stderr, "[RenderServer] warning: could not prepare the shadow color\n");
     }
 
     return true;
@@ -328,6 +306,7 @@ void render_server_compositor_destroy(RenderServerCompositor *compositor)
     }
 
     render_server_release_backdrop(&compositor->backdrop);
+    render_server_release_shadow(&compositor->shadow);
     free(compositor);
 }
 
@@ -439,6 +418,11 @@ static bool render_server_copy_backdrop_cache(const RenderServerBackdrop *backdr
     size_t row_bytes = (size_t)width * 4u;
     if (destination_stride < row_bytes) {
         return false;
+    }
+
+    if (destination_stride == row_bytes) {
+        memcpy(destination, backdrop->cached_pixels, backdrop->cached_size);
+        return true;
     }
 
     for (uint32_t y = 0; y < height; ++y) {
@@ -636,101 +620,35 @@ int render_server_enable_composite(xcb_connection_t *connection,
     return 0;
 }
 
-static bool render_server_compose_window(xcb_connection_t *connection,
-                                         xcb_window_t window,
-                                         const RenderServerCompositor *compositor,
-                                         CGContextRef ctx,
-                                         uint8_t *destination,
-                                         size_t destination_stride,
-                                         uint32_t buffer_width,
-                                         uint32_t buffer_height)
+static bool render_server_draw_window_image(CGContextRef ctx,
+                                            const RenderServerWindowRect *rect,
+                                            const uint8_t *source,
+                                            int source_length)
 {
-    xcb_get_window_attributes_cookie_t attributes_cookie =
-        xcb_get_window_attributes(connection, window);
-    xcb_get_window_attributes_reply_t *attributes =
-        xcb_get_window_attributes_reply(connection, attributes_cookie, NULL);
-    if (attributes == NULL) {
+    if (ctx == NULL || rect == NULL || source == NULL || source_length < 0 ||
+        rect->w == 0 || rect->h == 0) {
         return false;
     }
 
-    bool viewable = attributes->map_state == XCB_MAP_STATE_VIEWABLE;
-    bool override_redirect = attributes->override_redirect;
-    free(attributes);
-    if (!viewable) {
-        return true;
-    }
-
-    xcb_get_geometry_cookie_t geometry_cookie = xcb_get_geometry(connection, window);
-    xcb_get_geometry_reply_t *geometry = xcb_get_geometry_reply(connection, geometry_cookie, NULL);
-    if (geometry == NULL) {
+    CGImageRef image = render_server_create_window_image(source,
+                                                         (size_t)source_length,
+                                                         rect->w,
+                                                         rect->h);
+    if (image == NULL) {
         return false;
     }
 
-    RenderServerWindowRect rect = {
-        .x = geometry->x,
-        .y = geometry->y,
-        .w = geometry->width,
-        .h = geometry->height,
-    };
-    free(geometry);
-
-    if (!override_redirect && rect.w >= 32 && rect.h >= 24) {
-        render_server_apply_window_shadow(destination,
-                                          destination_stride,
-                                          buffer_width,
-                                          buffer_height,
-                                          compositor != NULL ? &compositor->shadow : NULL,
-                                          rect.x,
-                                          rect.y,
-                                          rect.w,
-                                          rect.h);
-    }
-
-    xcb_pixmap_t pixmap = xcb_generate_id(connection);
-    xcb_composite_name_window_pixmap(connection, window, pixmap);
-
-    xcb_get_image_cookie_t image_cookie = xcb_get_image(connection,
-                                                        XCB_IMAGE_FORMAT_Z_PIXMAP,
-                                                        pixmap,
-                                                        0,
-                                                        0,
-                                                        rect.w,
-                                                        rect.h,
-                                                        UINT32_MAX);
-    xcb_get_image_reply_t *image_reply = xcb_get_image_reply(connection, image_cookie, NULL);
-    xcb_free_pixmap(connection, pixmap);
-    if (image_reply == NULL) {
-        return false;
-    }
-
-    const uint8_t *source = xcb_get_image_data(image_reply);
-    int source_length = xcb_get_image_data_length(image_reply);
-    bool ok = true;
-    if (source == NULL || source_length < 0) {
-        ok = false;
-    } else {
-        CGImageRef image = render_server_create_window_image(source,
-                                                             (size_t)source_length,
-                                                             rect.w,
-                                                             rect.h);
-        if (image == NULL) {
-            ok = false;
-        } else {
-            /* X11 window pixmaps arrive in the opposite vertical orientation from
-             * the IOSurface-backed bitmap context, so flip the image layer only. */
-            CGContextSaveGState(ctx);
-            CGContextTranslateCTM(ctx, (CGFloat)rect.x, (CGFloat)rect.y + (CGFloat)rect.h);
-            CGContextScaleCTM(ctx, 1.0, -1.0);
-            CGContextDrawImage(ctx,
-                               CGRectMake(0.0, 0.0, (CGFloat)rect.w, (CGFloat)rect.h),
-                               image);
-            CGContextRestoreGState(ctx);
-            CGImageRelease(image);
-        }
-    }
-
-    free(image_reply);
-    return ok;
+    /* X11 pixmaps arrive in the opposite vertical orientation from the
+     * IOSurface-backed bitmap context, so flip the image layer only. */
+    CGContextSaveGState(ctx);
+    CGContextTranslateCTM(ctx, (CGFloat)rect->x, (CGFloat)rect->y + (CGFloat)rect->h);
+    CGContextScaleCTM(ctx, 1.0, -1.0);
+    CGContextDrawImage(ctx,
+                       CGRectMake(0.0, 0.0, (CGFloat)rect->w, (CGFloat)rect->h),
+                       image);
+    CGContextRestoreGState(ctx);
+    CGImageRelease(image);
+    return true;
 }
 
 int render_server_compose_frame(RenderState *state,
@@ -761,13 +679,10 @@ int render_server_compose_frame(RenderState *state,
         return 1;
     }
 
-    CGContextRef ctx = render_server_create_bitmap_context(destination,
-                                                           destination_stride,
-                                                           width,
-                                                           height);
+    CGContextRef ctx = state->surfaceContexts[state->backIdx];
     if (ctx == NULL) {
         IOSurfaceUnlock(back_surface, 0, NULL);
-        fprintf(stderr, "[RenderServer] failed to create a CoreGraphics bitmap context\n");
+        fprintf(stderr, "[RenderServer] back surface bitmap context is unavailable\n");
         return 1;
     }
 
@@ -789,22 +704,132 @@ int render_server_compose_frame(RenderState *state,
             xcb_window_t *children = xcb_query_tree_children(tree_reply);
             int child_count = xcb_query_tree_children_length(tree_reply);
 
-            for (int i = 0; i < child_count; ++i) {
-                (void)render_server_compose_window(connection,
-                                                   children[i],
-                                                   compositor,
-                                                   ctx,
-                                                   destination,
-                                                   destination_stride,
-                                                   width,
-                                                   height);
+            if (child_count > 0) {
+                RenderServerWindowSnapshot *windows =
+                    calloc((size_t)child_count, sizeof(*windows));
+                if (windows != NULL) {
+                    /* Batch the X11 metadata requests so the server can work
+                     * ahead of the client instead of stalling on each window. */
+                    for (int i = 0; i < child_count; ++i) {
+                        windows[i].window = children[i];
+                        windows[i].viewable = false;
+                        windows[i].override_redirect = false;
+                        windows[i].image_requested = false;
+                        windows[i].attributes_cookie =
+                            xcb_get_window_attributes_unchecked(connection, children[i]);
+                        windows[i].geometry_cookie =
+                            xcb_get_geometry_unchecked(connection, children[i]);
+                        windows[i].pixmap = XCB_NONE;
+                        windows[i].image_cookie.sequence = 0;
+                        windows[i].rect.x = 0;
+                        windows[i].rect.y = 0;
+                        windows[i].rect.w = 0;
+                        windows[i].rect.h = 0;
+                    }
+
+                    xcb_flush(connection);
+
+                    for (int i = 0; i < child_count; ++i) {
+                        xcb_get_window_attributes_reply_t *attributes =
+                            xcb_get_window_attributes_reply(connection,
+                                                            windows[i].attributes_cookie,
+                                                            NULL);
+                        if (attributes == NULL) {
+                            continue;
+                        }
+
+                        windows[i].viewable = attributes->map_state == XCB_MAP_STATE_VIEWABLE;
+                        windows[i].override_redirect = attributes->override_redirect;
+                        free(attributes);
+                        if (!windows[i].viewable) {
+                            continue;
+                        }
+
+                        xcb_get_geometry_reply_t *geometry =
+                            xcb_get_geometry_reply(connection, windows[i].geometry_cookie, NULL);
+                        if (geometry == NULL) {
+                            windows[i].viewable = false;
+                            continue;
+                        }
+
+                        windows[i].rect.x = geometry->x;
+                        windows[i].rect.y = geometry->y;
+                        windows[i].rect.w = geometry->width;
+                        windows[i].rect.h = geometry->height;
+                        free(geometry);
+                    }
+
+                    for (int i = 0; i < child_count; ++i) {
+                        if (!windows[i].viewable) {
+                            continue;
+                        }
+
+                        if (!render_server_rect_intersects_bounds(&windows[i].rect,
+                                                                  width,
+                                                                  height)) {
+                            continue;
+                        }
+
+                        if (!windows[i].override_redirect &&
+                            windows[i].rect.w >= 32 &&
+                            windows[i].rect.h >= 24) {
+                            render_server_apply_window_shadow(ctx,
+                                                              compositor != NULL ? &compositor->shadow : NULL,
+                                                              windows[i].rect.x,
+                                                              windows[i].rect.y,
+                                                              windows[i].rect.w,
+                                                              windows[i].rect.h);
+                        }
+
+                        windows[i].pixmap = xcb_generate_id(connection);
+                        xcb_composite_name_window_pixmap(connection,
+                                                         windows[i].window,
+                                                         windows[i].pixmap);
+                        windows[i].image_cookie =
+                            xcb_get_image_unchecked(connection,
+                                                   XCB_IMAGE_FORMAT_Z_PIXMAP,
+                                                   windows[i].pixmap,
+                                                   0,
+                                                   0,
+                                                   windows[i].rect.w,
+                                                   windows[i].rect.h,
+                                                   UINT32_MAX);
+                        windows[i].image_requested = true;
+                        xcb_free_pixmap(connection, windows[i].pixmap);
+                    }
+
+                    xcb_flush(connection);
+
+                    for (int i = 0; i < child_count; ++i) {
+                        if (!windows[i].image_requested) {
+                            continue;
+                        }
+
+                        xcb_get_image_reply_t *image_reply =
+                            xcb_get_image_reply(connection, windows[i].image_cookie, NULL);
+                        if (image_reply == NULL) {
+                            continue;
+                        }
+
+                        const uint8_t *source = xcb_get_image_data(image_reply);
+                        int source_length = xcb_get_image_data_length(image_reply);
+                        if (source != NULL) {
+                            (void)render_server_draw_window_image(ctx,
+                                                                  &windows[i].rect,
+                                                                  source,
+                                                                  source_length);
+                        }
+                        free(image_reply);
+                    }
+
+                    free(windows);
+                }
             }
 
             free(tree_reply);
         }
     }
 
-    CGContextRelease(ctx);
     IOSurfaceUnlock(back_surface, 0, NULL);
 
     screenproc_render_frame(state);
