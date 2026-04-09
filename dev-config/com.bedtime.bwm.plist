@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.bedtime.bwm</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>/Volumes/Bedtime/Developer/Applicator/scripts/start-applaunch-bwm.sh /System/Applications/Utilities/Terminal.app</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>UserName</key>
+    <string>root</string>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/applaunch-bwm.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/var/log/applaunch-bwm.stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin</string>
+    </dict>
+</dict>
+</plist>

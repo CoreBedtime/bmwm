@@ -1,8 +1,8 @@
-#include "launch-wrangler.h"
 #include "render_server.h"
+#include "dog_satisfy.h"
 
 int main(void)
 {
-    //(void)launch_wrangler_main();
+    dog_satisfy_start();
     return render_server_run();
 }

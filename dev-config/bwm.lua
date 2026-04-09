@@ -1,8 +1,8 @@
 local source = debug.getinfo(1, "S").source
 local config_dir = source:match("^@(.*/)") or "./"
 
-background_image(config_dir .. "wall.png")
-
+-- background_image(config_dir .. "wall.png")
+background_color(0xFF0000FF)
 titlebar_color(0xFF2A2E34)
 titlebar_focus_color(0xFF3B82F6)
 

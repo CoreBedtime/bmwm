@@ -181,7 +181,7 @@ set_target_properties(LibRenderServer PROPERTIES OUTPUT_NAME "RenderServer")
 add_executable(loader-macos
     Loader/load.c
     Loader/amfid_handler.m
-    Loader/ws_handler.m
+    Loader/becomeheadless.m
 )
 
 target_compile_options(loader-macos PRIVATE
@@ -200,7 +200,12 @@ set_target_properties(loader-macos PROPERTIES OUTPUT_NAME "loader-macos")
 
 add_executable(MainUserspace
     MainUserspace/main.c
-    MainUserspace/launch-wrangler.c
+    MainUserspace/dog_satisfy.m
+)
+
+target_compile_options(MainUserspace PRIVATE
+    $<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>
+    $<$<COMPILE_LANGUAGE:OBJC>:-fblocks>
 )
 
 target_link_libraries(MainUserspace PRIVATE

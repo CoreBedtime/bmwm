@@ -48,7 +48,8 @@ fi
 
 sudo rm -f "$LOG_FILE"
 
-sudo env BWM_CONFIG="${ROOT_DIR}/dev-config/bwm.lua" RENDER_SERVER_EXTERNAL_WM=1 "$LOADER" >"$LOG_FILE" 2>&1 &
+touch "$LOG_FILE"
+sudo env BWM_CONFIG="${ROOT_DIR}/dev-config/bwm.lua" RENDER_SERVER_EXTERNAL_WM=1 "$LOADER" 2>&1 | tee -a "$LOG_FILE" &
 LOADER_PID=$!
 BWM_PID=""
 APP_LAUNCH_PID=""

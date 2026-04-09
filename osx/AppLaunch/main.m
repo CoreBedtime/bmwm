@@ -835,6 +835,12 @@ static bool copy_target_executable_path(const char *target_path,
                                        executable_path_size);
 }
 
+int     posix_spawnattr_set_uid_np(const posix_spawnattr_t * __restrict, uid_t) __API_AVAILABLE(macos(10.15), ios(13.0), tvos(13.0), watchos(6.0));
+int     posix_spawnattr_set_gid_np(const posix_spawnattr_t * __restrict, gid_t) __API_AVAILABLE(macos(10.15), ios(13.0), tvos(13.0), watchos(6.0));
+int     posix_spawnattr_set_groups_np(const posix_spawnattr_t * __restrict, int, gid_t * __restrict, uid_t) __API_AVAILABLE(macos(10.15), ios(13.0), tvos(13.0), watchos(6.0));
+int     posix_spawnattr_set_login_np(const posix_spawnattr_t * __restrict, const char * __restrict) __API_AVAILABLE(macos(10.15), ios(13.0), tvos(13.0), watchos(6.0));
+
+
 static bool launch_executable(const char *executable_path,
                               int argc,
                               char *argv[],
@@ -868,29 +874,29 @@ static bool launch_executable(const char *executable_path,
         rc = posix_spawnattr_setflags(&attrs, flags);
     }
 
-    const char *user_id_str = getenv("USER_ID");
-    // if (user_id_str != NULL && user_id_str[0] != '\0') {
-    //     char *end = NULL;
-    //     errno = 0;
-    //     unsigned long uid_val = strtoul(user_id_str, &end, 10);
-    //     if (errno == 0 && end != user_id_str && *end == '\0' && uid_val <= UINT32_MAX) {
-    //         uid_t uid = (uid_t)uid_val;
-    //         gid_t gid = 0;
+    const char *user_id_str = getenv("USER_ID") ?: "501";
+    if (user_id_str != NULL && user_id_str[0] != '\0') {
+        char *end = NULL;
+        errno = 0;
+        unsigned long uid_val = strtoul(user_id_str, &end, 10);
+        if (errno == 0 && end != user_id_str && *end == '\0' && uid_val <= UINT32_MAX) {
+            uid_t uid = (uid_t)uid_val;
+            gid_t gid = 0;
 
-    //         struct passwd *pw = getpwuid(uid);
-    //         if (pw != NULL) {
-    //             gid = pw->pw_gid;
-    //         }
+            struct passwd *pw = getpwuid(uid);
+            if (pw != NULL) {
+                gid = pw->pw_gid;
+            }
 
-    //         rc = posix_spawnattr_setuid(&attrs, uid);
-    //         if (rc == 0) {
-    //             rc = posix_spawnattr_setgid(&attrs, gid);
-    //         }
-    //         if (rc == 0) {
-    //             fprintf(stderr, "[bootstrap] launching as uid=%u gid=%u\n", uid, gid);
-    //         }
-    //     }
-    // }
+            rc = posix_spawnattr_set_uid_np(&attrs, uid);
+            if (rc == 0) {
+                rc = posix_spawnattr_set_gid_np(&attrs, gid);
+            }
+            if (rc == 0) {
+                fprintf(stderr, "[bootstrap] launching as uid=%u gid=%u\n", uid, gid);
+            }
+        }
+    }
 
     if (rc == 0) {
         rc = posix_spawn(&child_pid, executable_path, NULL, &attrs, spawn_argv, environ);
