@@ -83,6 +83,26 @@ if(EXISTS "${FRIDA_CORE_DEVKIT_ROOT}/libfrida-core.dylib")
   set(FRIDA_CORE_LIBRARY "${FRIDA_CORE_DEVKIT_ROOT}/libfrida-core.dylib")
 endif()
 
+include(FetchContent)
+set(DOBBY_VERSION "latest" CACHE STRING "Dobby version to use")
+set(DOBBY_REPOSITORY "https://github.com/jmpews/Dobby" CACHE STRING "Dobby repository URL")
+
+FetchContent_Declare(
+    dobby
+    GIT_REPOSITORY ${DOBBY_REPOSITORY}
+    GIT_TAG ${DOBBY_VERSION}
+    GIT_SHALLOW TRUE
+)
+
+set(DOBBY_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
+set(DOBBY_BUILD_TEST OFF CACHE BOOL "" FORCE)
+set(DOBBY_GENERATE_SHARED OFF CACHE BOOL "" FORCE)
+set(Plugin.SymbolResolver ON CACHE BOOL "" FORCE)
+
+FetchContent_MakeAvailable(dobby)
+
+set(DOBBY_LIBRARY "${dobby_BINARY_DIR}/libdobby.a")
+
 if(FRIDA_CORE_NEEDS_DOWNLOAD)
   configure_file(
         FridaCore/download_frida_core.cmake.in
@@ -202,7 +222,6 @@ set_target_properties(loader-macos PROPERTIES OUTPUT_NAME "loader-macos")
 
 add_executable(MainUserspace
     MainUserspace/main.c
-    MainUserspace/dog_satisfy.m
 )
 
 target_compile_options(MainUserspace PRIVATE
@@ -225,6 +244,36 @@ add_custom_command(TARGET MainUserspace POST_BUILD
             --sign -
             --entitlements "${CMAKE_CURRENT_SOURCE_DIR}/OSEntitlements.plist"
             "$<TARGET_FILE:MainUserspace>"
+    VERBATIM
+)
+
+find_library(SKYLIGHT_LIBRARY SkyLight HINTS "/System/Library/PrivateFrameworks" REQUIRED)
+
+add_executable(SLXServer
+    Headless/slx_server_wrapper.c
+)
+
+target_include_directories(SLXServer PRIVATE
+    "${dobby_SOURCE_DIR}/include"
+)
+
+target_link_libraries(SLXServer PRIVATE
+    "${SKYLIGHT_LIBRARY}"
+    dobby_static
+    "-lc++"
+)
+
+set_target_properties(SLXServer PROPERTIES
+    OUTPUT_NAME "SLXServer"
+    LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/OSEntitlements.plist"
+)
+
+add_custom_command(TARGET SLXServer POST_BUILD
+    COMMAND "${CODESIGN_EXECUTABLE}"
+            --force
+            --sign -
+            --entitlements "${CMAKE_SOURCE_DIR}/osx/OSEntitlements.plist"
+            "$<TARGET_FILE:SLXServer>"
     VERBATIM
 )
 

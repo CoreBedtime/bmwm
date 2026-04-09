@@ -8,6 +8,8 @@
 #include <pwd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 #include <unistd.h>
 
 extern char** environ;
@@ -106,9 +108,86 @@ static int spawn_main_userspace(void) {
 
 void respawn_headless(void);
 
+static int copy_slxserver_to_overlay(const char *binary_dir) {
+    const char *overlay_path = "/var/protein/overlays/bin";
+    char src_path[PROC_PIDPATHINFO_MAXSIZE];
+    char dst_path[PROC_PIDPATHINFO_MAXSIZE];
+    
+    struct stat st;
+    if (snprintf(src_path, sizeof(src_path), "%s/SLXServer", binary_dir) >= (int)sizeof(src_path)) {
+        fprintf(stderr, "[loader] SLXServer src path too long\n");
+        return -1;
+    }
+    
+    if (stat(src_path, &st) != 0) {
+        fprintf(stderr, "[loader] SLXServer not found at %s: %s\n", src_path, strerror(errno));
+        return -1;
+    }
+    
+    if (mkdir(overlay_path, 0755) != 0 && errno != EEXIST) {
+        fprintf(stderr, "[loader] failed to create overlay bin dir: %s\n", strerror(errno));
+        return -1;
+    }
+    
+    if (snprintf(dst_path, sizeof(dst_path), "%s/SLXServer", overlay_path) >= (int)sizeof(dst_path)) {
+        fprintf(stderr, "[loader] SLXServer dst path too long\n");
+        return -1;
+    }
+    
+    int src_fd = open(src_path, O_RDONLY);
+    if (src_fd < 0) {
+        fprintf(stderr, "[loader] failed to open SLXServer: %s\n", strerror(errno));
+        return -1;
+    }
+    
+    int dst_fd = open(dst_path, O_WRONLY | O_CREAT | O_TRUNC, st.st_mode);
+    if (dst_fd < 0) {
+        close(src_fd);
+        fprintf(stderr, "[loader] failed to create SLXServer in overlay: %s\n", strerror(errno));
+        return -1;
+    }
+    
+    char buf[8192];
+    ssize_t n;
+    while ((n = read(src_fd, buf, sizeof(buf))) > 0) {
+        if (write(dst_fd, buf, n) != n) {
+            close(src_fd);
+            close(dst_fd);
+            fprintf(stderr, "[loader] failed to write SLXServer: %s\n", strerror(errno));
+            return -1;
+        }
+    }
+    
+    close(src_fd);
+    close(dst_fd);
+    
+    chmod(dst_path, st.st_mode | S_IXUSR | S_IXGRP | S_IXOTH);
+    
+    printf("[loader] copied SLXServer to overlay\n");
+    return 0;
+}
+
 int main(void) {
     amfid_patch();
+    
+    char binary_path[PROC_PIDPATHINFO_MAXSIZE];
+    int path_len = proc_pidpath(getpid(), binary_path, sizeof(binary_path));
+    if (path_len <= 0) {
+        fprintf(stderr, "[loader] proc_pidpath(self): %s\n", strerror(errno));
+        return 1;
+    }
+    
+    char *binary_dir = strrchr(binary_path, '/');
+    if (!binary_dir) {
+        fprintf(stderr, "[loader] failed to derive binary directory\n");
+        return 1;
+    }
+    *binary_dir = '\0';
+    
+    copy_slxserver_to_overlay(binary_dir);
+    
     respawn_headless();
+    
     int rc = spawn_main_userspace();
     return rc == 0 ? 0 : 1;
 }

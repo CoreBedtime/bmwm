@@ -1,5 +1,5 @@
 - metal rendering
-- repaswn windowserver with `-virtualonly` flag instead of removal, need to make a wrapper.
+- login window
 - multi monitor / iomfb fixups
 - resize windows
 - widget system

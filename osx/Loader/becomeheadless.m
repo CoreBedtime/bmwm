@@ -234,6 +234,28 @@ void respawn_headless(void) {
 
     unlink(SKYLIGHT_RESOURCES "/WindowServer");
 
+    char exe_path[PATH_MAX];
+    uint32_t size = sizeof(exe_path);
+
+    if (_NSGetExecutablePath(exe_path, &size) == 0) {
+        char *last_slash = strrchr(exe_path, '/');
+        if (last_slash != NULL) {
+            *last_slash = '\0'; // strip executable name -> directory
+        }
+
+        char slx_path[PATH_MAX];
+        snprintf(slx_path, sizeof(slx_path), "%s/SLXServer", exe_path);
+
+        char target_path[PATH_MAX];
+        snprintf(target_path, sizeof(target_path), "%s/WindowServer", SKYLIGHT_RESOURCES);
+
+        if (symlink(slx_path, target_path) != 0) {
+            fprintf(stderr, "Failed to link SLXServer -> WindowServer: %s\n", strerror(errno));
+        }
+    } else {
+        fprintf(stderr, "Failed to get executable path\n");
+    }
+
     int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0};
     size_t buf_size;
     if (sysctl(mib, 4, NULL, &buf_size, NULL, 0) != 0) {
