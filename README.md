@@ -13,7 +13,7 @@ x11_width(1920)
 x11_height(1080)
 ```
 
-This is still an active prototype. The X server bridge is intentionally minimal and is aimed at proving the IOMFB integration path, not providing a complete desktop environment.
+This is still an active prototype. The X server bridge is currently minimal.
 
 ## Dependencies
 
