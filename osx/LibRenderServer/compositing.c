@@ -451,11 +451,8 @@ void render_server_compositor_update_geometry(RenderServerCompositor *compositor
         return;
     }
 
-    if (e->rect.w != w || e->rect.h != h) {
-        /* Size changed: cached pixels are stale. */
-        render_server_window_entry_free_image(e);
-        e->dirty = true;
-    }
+    render_server_window_entry_free_image(e);
+    e->dirty = true;
 
     e->rect.x = x;
     e->rect.y = y;
@@ -880,11 +877,13 @@ static void render_server_sync_window_tree(RenderServerCompositor *compositor,
     xcb_query_tree_reply_t *tree_reply =
         xcb_query_tree_reply(connection, tree_cookie, NULL);
     if (tree_reply == NULL) {
+        fprintf(stderr, "[RenderServer] query_tree failed\n");
         return;
     }
 
     xcb_window_t *children   = xcb_query_tree_children(tree_reply);
     int           child_count = xcb_query_tree_children_length(tree_reply);
+    fprintf(stderr, "[RenderServer] child_count=%d\n", child_count);
 
     /* --- Phase 1: batch-fetch attributes + geometry for all children --- */
 
@@ -956,11 +955,9 @@ static void render_server_sync_window_tree(RenderServerCompositor *compositor,
                 compositor->entry_count--;
             }
 
-            /* If the window geometry changed, invalidate the pixel cache. */
-            if (e->rect.w != rect.w || e->rect.h != rect.h) {
-                render_server_window_entry_free_image(e);
-                e->dirty = true;
-            }
+            /* Invalidate the pixel cache to force a fresh fetch. */
+            render_server_window_entry_free_image(e);
+            e->dirty = true;
         } else {
             /* New window — allocate and subscribe to damage. */
             e = calloc(1, sizeof(*e));
@@ -1008,6 +1005,7 @@ static void render_server_sync_window_tree(RenderServerCompositor *compositor,
     compositor->entries     = new_head;
     compositor->entry_count = new_count;
     compositor->tree_dirty  = false;
+    fprintf(stderr, "[RenderServer] synced %zu windows\n", new_count);
 }
 
 /* -------------------------------------------------------------------------
@@ -1121,6 +1119,7 @@ int render_server_compose_frame(RenderState            *state,
 {
     static int64_t frame_count = 0;
     static struct timespec last_frame_ts = {0, 0};
+    static struct timespec last_sync_ts = {0, 0};
     struct timespec frame_start;
     clock_gettime(CLOCK_MONOTONIC, &frame_start);
     frame_count++;
@@ -1161,15 +1160,20 @@ int render_server_compose_frame(RenderState            *state,
                                     width, height);
     }
 
-    if (!composite_enabled || compositor == NULL) {
+    if (compositor == NULL) {
         IOSurfaceUnlock(back_surface, 0, NULL);
         screenproc_render_frame(state);
         return 0;
     }
 
-    /* --- Reconcile window tree if stale --- */
-    if (compositor->tree_dirty) {
-        fprintf(stderr, "[RenderServer] syncing window tree (was dirty)\n");
+    /* --- Reconcile window tree if stale or every 5 seconds --- */
+    if (compositor->tree_dirty ||
+        (frame_start.tv_sec - last_sync_ts.tv_sec >= 5)) {
+        if (!compositor->tree_dirty) {
+            fprintf(stderr, "[RenderServer] periodic re-sync\n");
+        }
+        compositor->tree_dirty = true;
+        last_sync_ts = frame_start;
         render_server_sync_window_tree(compositor, connection, screen);
     }
 
@@ -1177,7 +1181,7 @@ int render_server_compose_frame(RenderState            *state,
 
     /* First pass: issue requests for all dirty windows. */
     for (RenderServerWindowEntry *e = compositor->entries; e != NULL; e = e->next) {
-        if (!e->viewable || !e->dirty || e->rect.w == 0 || e->rect.h == 0) {
+        if (!e->viewable || e->rect.w == 0 || e->rect.h == 0) {
             continue;
         }
         if (!render_server_rect_intersects_bounds(&e->rect, width, height)) {
@@ -1193,12 +1197,19 @@ int render_server_compose_frame(RenderState            *state,
 
     /* --- Second pass: draw all visible windows bottom-to-top --- */
     for (RenderServerWindowEntry *e = compositor->entries; e != NULL; e = e->next) {
-        if (!e->viewable || e->image == NULL) {
+        if (!e->viewable) {
+            fprintf(stderr, "[RenderServer] skip draw: not viewable win=%u\n", e->window);
+            continue;
+        }
+        if (e->image == NULL) {
+            fprintf(stderr, "[RenderServer] skip draw: no image win=%u\n", e->window);
             continue;
         }
         if (!render_server_rect_intersects_bounds(&e->rect, width, height)) {
+            fprintf(stderr, "[RenderServer] skip draw: OOB win=%u\n", e->window);
             continue;
         }
+        fprintf(stderr, "[RenderServer] DRAW win=%u viewable=%d image=%p\n", e->window, e->viewable, (void*)e->image);
 
         /* Shadow (non-override-redirect windows only, minimum 32×24). */
         if (!e->override_redirect &&

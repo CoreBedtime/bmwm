@@ -17,6 +17,8 @@
 #include <unistd.h>
 #include <xcb/xcb.h>
 
+#include <spawn.h>
+
 #include "iomfb.h"
 #include "compositing.h"
 #include "lua_config.h"
@@ -286,10 +288,13 @@ static int render_server_write_xorg_config(XServerState *server,
             "    SubSection \"Display\"\n"
             "        Depth 24\n"
             "        Modes \"%s\"\n"
+            "        Virtual %u %u\n"
             "    EndSubSection\n"
             "EndSection\n",
             modeline,
-            mode_name);
+            mode_name,
+            width,
+            height);
 
     if (fclose(config) != 0) {
         fprintf(stderr, "[RenderServer] failed to finalize the Xorg config: %s\n", strerror(errno));
@@ -707,6 +712,7 @@ static void render_server_drain_x11_events(XServerState           *server,
         }
 
         uint8_t type = event->response_type & 0x7Fu;
+        fprintf(stderr, "[RenderServer] event type=%u\n", type);
         switch (type) {
             case XCB_MAP_REQUEST:
                 render_server_handle_map_request(server,
@@ -882,6 +888,23 @@ static int render_server_start_xorg(RenderState *state, XServerState *server,
     if (setenv("DISPLAY", server->display_name, 1) != 0) {
         fprintf(stderr, "[RenderServer] failed to export DISPLAY=%s\n", server->display_name);
         return 1;
+    }
+
+    {
+        pid_t pid = fork();
+        if (pid == 0) {
+            char display_arg[64];
+            snprintf(display_arg, sizeof(display_arg), "%s", server->display_name);
+            char *argv[] = { "launchctl", "asuser", "501", "launchctl", "setenv", "DISPLAY", display_arg, NULL };
+            posix_spawn(NULL, "/launchctl", NULL, NULL, argv, NULL);
+            _exit(1);
+        } else if (pid > 0) {
+            int status = 0;
+            waitpid(pid, &status, 0);
+            if (status != 0) {
+                fprintf(stderr, "[RenderServer] failed to set DISPLAY in user launchd\n");
+            }
+        }
     }
 
     fprintf(stdout,
