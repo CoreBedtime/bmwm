@@ -154,52 +154,6 @@ target_link_libraries(ApplicatorConfig PUBLIC
     "${LUAJIT_LIBRARY}"
 )
 
-add_library(FramebufferLib STATIC
-    FramebufferLib/api.m
-    FramebufferLib/iomfb.m
-)
-
-target_compile_options(FramebufferLib PRIVATE
-    $<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>
-)
-
-target_include_directories(FramebufferLib PUBLIC
-    "${CMAKE_CURRENT_SOURCE_DIR}/FramebufferLib"
-)
-
-target_link_libraries(FramebufferLib PUBLIC
-    "${FOUNDATION_FRAMEWORK}"
-    "${COREFOUNDATION_FRAMEWORK}"
-    "${COREGRAPHICS_FRAMEWORK}"
-    "${IMAGEIO_FRAMEWORK}"
-    "${IOKIT_FRAMEWORK}"
-    "${IOSURFACE_FRAMEWORK}"
-)
-
-add_library(LibRenderServer STATIC
-    LibRenderServer/render_server.c
-    LibRenderServer/compositing.c
-)
-
-target_include_directories(LibRenderServer PUBLIC
-    "${CMAKE_CURRENT_SOURCE_DIR}/LibRenderServer"
-)
-
-target_include_directories(LibRenderServer PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/FramebufferLib"
-    "${XCB_INCLUDE_DIR}"
-)
-
-target_link_libraries(LibRenderServer PUBLIC
-    ApplicatorConfig
-    FramebufferLib
-    "${XCB_LIBRARY}"
-    "${XCB_COMPOSITE_LIBRARY}"
-    "${XCB_DAMAGE_LIBRARY}"
-)
-
-set_target_properties(LibRenderServer PROPERTIES OUTPUT_NAME "RenderServer")
-
 add_executable(loader-macos
     Loader/load.c
     Loader/amfid_handler.m
@@ -219,33 +173,6 @@ target_link_libraries(loader-macos PRIVATE
 )
 
 set_target_properties(loader-macos PROPERTIES OUTPUT_NAME "loader-macos")
-
-add_executable(MainUserspace
-    MainUserspace/main.c
-)
-
-target_compile_options(MainUserspace PRIVATE
-    $<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>
-    $<$<COMPILE_LANGUAGE:OBJC>:-fblocks>
-)
-
-target_link_libraries(MainUserspace PRIVATE
-    LibRenderServer
-)
-
-set_target_properties(MainUserspace PROPERTIES
-    OUTPUT_NAME "MainUserspace"
-    LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/OSEntitlements.plist"
-)
-
-add_custom_command(TARGET MainUserspace POST_BUILD
-    COMMAND "${CODESIGN_EXECUTABLE}"
-            --force
-            --sign -
-            --entitlements "${CMAKE_CURRENT_SOURCE_DIR}/OSEntitlements.plist"
-            "$<TARGET_FILE:MainUserspace>"
-    VERBATIM
-)
 
 find_library(SKYLIGHT_LIBRARY SkyLight HINTS "/System/Library/PrivateFrameworks" REQUIRED)
 
@@ -283,24 +210,20 @@ find_library(XCB_XFIXES_LIBRARY xcb-xfixes HINTS /opt/local/lib REQUIRED)
 find_library(X11_LIBRARY X11 HINTS /opt/local/lib REQUIRED)
 find_library(XCURSOR_LIBRARY Xcursor HINTS /opt/local/lib REQUIRED)
 
-# bwm — standalone reparenting X11 window manager with HID input
-# Connects to an existing $DISPLAY; no dependency on FramebufferLib / IOMFB.
-add_executable(bwm
-    WindowManager/main.c
-    WindowManager/bwm_wm.c
-    WindowManager/config.c
-    WindowManager/client.c
-    WindowManager/focus.c
-    WindowManager/events.c
-    WindowManager/input.c
+add_executable(ApplicationServer
+    ApplicationServer/application_server.m
 )
 
-target_include_directories(bwm PRIVATE
+target_compile_options(ApplicationServer PRIVATE
+    $<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>
+)
+
+target_include_directories(ApplicationServer PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/ApplicationServer"
     "${XCB_INCLUDE_DIR}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/WindowManager"
 )
 
-target_link_libraries(bwm PRIVATE
+target_link_libraries(ApplicationServer PRIVATE
     ApplicatorConfig
     "${XCB_LIBRARY}"
     "${XCB_XTEST_LIBRARY}"
@@ -312,17 +235,7 @@ target_link_libraries(bwm PRIVATE
     "${IMAGEIO_FRAMEWORK}"
     "${COREFOUNDATION_FRAMEWORK}"
     "${IOKIT_FRAMEWORK}"
-)
-
-set_target_properties(bwm PROPERTIES OUTPUT_NAME "bwm")
-
-add_custom_command(TARGET bwm POST_BUILD
-    COMMAND "${CODESIGN_EXECUTABLE}"
-            --force
-            --sign -
-            --entitlements "${CMAKE_SOURCE_DIR}/osx/OSEntitlements.plist"
-            "$<TARGET_FILE:bwm>"
-    VERBATIM
+    "${APPKIT_FRAMEWORK}"
 )
 
 add_library(AppLaunchRunner SHARED
