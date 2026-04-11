@@ -110,11 +110,11 @@ if ! kill -0 "$BWM_PID" >/dev/null 2>&1; then
     exit 1
 fi
 
-# Launch xterm for visual debugging (optional, can be disabled via XTERM=)
-if [ -n "${XTERM:-}" ] && [ -x "$XTERM" ]; then
-    printf 'start-applaunch-bwm.sh: launching xterm for debugging\n'
-    launchctl asuser "$GUI_UID" env DISPLAY="$DISPLAY_VALUE" "$XTERM" -geometry 80x24+10+10 &
-fi
+# # Launch xterm for visual debugging (optional, can be disabled via XTERM=)
+# if [ -n "${XTERM:-}" ] && [ -x "$XTERM" ]; then
+#     printf 'start-applaunch-bwm.sh: launching xterm for debugging\n'
+#     launchctl asuser "$GUI_UID" env DISPLAY="$DISPLAY_VALUE" "$XTERM" -geometry 80x24+10+10 &
+# fi
 
 LAUNCH_PIDS=()
 for app in "${APPS[@]}"; do

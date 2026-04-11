@@ -320,7 +320,7 @@ add_custom_command(TARGET bwm POST_BUILD
     COMMAND "${CODESIGN_EXECUTABLE}"
             --force
             --sign -
-            --entitlements "${CMAKE_CURRENT_SOURCE_DIR}/OSEntitlements.plist"
+            --entitlements "${CMAKE_SOURCE_DIR}/osx/OSEntitlements.plist"
             "$<TARGET_FILE:bwm>"
     VERBATIM
 )

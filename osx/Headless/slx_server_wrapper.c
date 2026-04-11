@@ -13,19 +13,13 @@
 
 static int (*orig_func)();
 
-static int bdetour__() {
-    return 0;
+static int cxdetour__() {
+    return 1;
 }
-
 static int patch_wspostlocalnotification(void) {
-    void *sym = DobbySymbolResolver("SkyLight", "_WSFeatureAvailabilityComputeBool");
-    if (!sym) {
-        return -1;
-    }
-
-    if (DobbyHook(sym, (void *)bdetour__, (void **)&orig_func) != 0) {
-        return -1;
-    }
+    void *sym;
+    sym = DobbySymbolResolver("SkyLight", "CGXUpdateDisplay");
+    if (DobbyHook(sym, (void *)cxdetour__, (void **)&orig_func) != 0)  return -1;
 
     return 0;
 }
@@ -33,17 +27,9 @@ static int patch_wspostlocalnotification(void) {
 extern void SLXServer(int argc, char **argv);
 
 int main(int argc, char **argv) {
-    char *new_argv[] = {
-        "/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
-        "-virtualonly",
-        "-daemon",
-        NULL
-    };
-    int new_argc = 3;
-
     patch_wspostlocalnotification();
 
-    SLXServer(new_argc, new_argv);
+    SLXServer(argc, argv);
     return 0;
 }
 #endif

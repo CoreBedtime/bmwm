@@ -9,7 +9,7 @@
     <array>
         <string>/bin/bash</string>
         <string>-c</string>
-        <string>/Volumes/Bedtime/Developer/Applicator/scripts/start-applaunch-bwm.sh /System/Applications/Utilities/Terminal.app</string>
+        <string>/Volumes/Bedtime/Developer/Applicator/scripts/start-dbus-xfce.sh</string>
     </array>
 
     <key>RunAtLoad</key>

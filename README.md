@@ -1,6 +1,6 @@
-# Applicator
+# bmwm
 
-Applicator is a macOS-focused experiment around IOMFB-backed rendering, an X11 render-server bridge, and an optional external X11 window manager.
+bmwm is a macOS-focused experiment around IOMFB-backed rendering, an X11 render-server bridge, and an optional external X11 window manager.
 
 ## Current State
 
@@ -17,7 +17,7 @@ This is still an active prototype. The X server bridge is currently minimal.
 
 ## Dependencies
 
-Applicator currently depends on:
+bmwm currently depends on:
 
 - macOS with the Xcode Command Line Tools
 - CMake 3.20 or newer
