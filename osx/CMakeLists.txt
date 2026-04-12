@@ -178,6 +178,7 @@ target_link_libraries(AppLaunchRunner PRIVATE
     "${IOKIT_FRAMEWORK}"
     "${SECURITY_FRAMEWORK}"
     "${APPKIT_FRAMEWORK}"
+    "${SKYLIGHT_LIBRARY}"
     "-framework CoreImage"
 )
 

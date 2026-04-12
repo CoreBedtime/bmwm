@@ -1,4 +1,8 @@
 #import <Cocoa/Cocoa.h>
+#include <CoreGraphics/CGAffineTransform.h>
+#include <CoreFoundation/CFBase.h>
+#include <stdio.h>
+#include <stdint.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <objc/runtime.h>
 #import <xcb/xcb.h>
@@ -10,6 +14,35 @@
 
 static xcb_connection_t *x_conn = NULL;
 static xcb_screen_t *x_screen = NULL;
+
+int g_space = 0;
+int g_connection = 0;
+
+extern int SLSMainConnectionID(void);
+extern int SLSSpaceCreate(int cid, int one, int zero);
+extern CGError SLSSpaceSetAbsoluteLevel(int cid, int sid, int level);
+extern CGError SLSShowSpaces(int cid, CFArrayRef space_list);
+extern CGError SLSHideSpaces(int cid, CFArrayRef space_list);
+extern CGError SLSSpaceAddWindowsAndRemoveFromSpaces(int cid, int sid, CFArrayRef array, int seven);
+extern CGError SLSSpaceSetTransform(int cid, int sid, CGAffineTransform transform);
+
+
+static CFArrayRef CFNumberArray(void *values, size_t size, int count, CFNumberType type) {
+    CFNumberRef temp[count];
+
+    for (int i = 0; i < count; ++i) {
+        temp[i] = CFNumberCreate(NULL, type, ((char *)values) + (size * i));
+    }
+
+    CFArrayRef result = CFArrayCreate(NULL, (const void **)temp, count, &kCFTypeArrayCallBacks);
+
+    for (int i = 0; i < count; ++i) {
+        CFRelease(temp[i]);
+    }
+
+    return result;
+}
+
 
 static xcb_connection_t* get_x_connection() {
     static dispatch_once_t onceToken;
@@ -24,6 +57,22 @@ static xcb_connection_t* get_x_connection() {
                 break;
             }
             if (conn) xcb_disconnect(conn);
+        }
+
+        g_connection = SLSMainConnectionID();
+        if (!g_space) {
+            g_space = SLSSpaceCreate(g_connection, 1, 0);
+            SLSSpaceSetAbsoluteLevel(g_connection, g_space, 0);
+
+            CFArrayRef space_list = CFNumberArray(&g_space,
+                                                  sizeof(uint32_t),
+                                                  1,
+                                                  kCFNumberSInt32Type);
+            SLSShowSpaces(g_connection, space_list);
+            SLSSpaceSetTransform(g_connection, g_space, CGAffineTransformMakeTranslation(999999.0, 999999.0)); // get an offscreen render space (what a fucking hack lol)
+            CFRelease(space_list);
+
+            NSLog(@"gspace %d", g_space);
         }
     });
     return x_conn;
@@ -77,6 +126,19 @@ void swizzle(Class c, SEL orig, SEL new) {
         xcb_window_t win = xcb_generate_id(conn);
         self.x11_window = win;
 
+        uint32_t wid = (uint32_t)[self windowNumber];
+        CFArrayRef window_list = CFNumberArray(&wid,
+                                               sizeof(uint32_t),
+                                               1,
+                                               kCFNumberSInt32Type);
+
+        SLSSpaceAddWindowsAndRemoveFromSpaces(g_connection,
+                                              g_space,
+                                              window_list,
+                                              0x7);
+
+        CFRelease(window_list);
+
         NSRect frame = [self frame];
         uint32_t mask = XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK;
         uint32_t values[2] = { x_screen->white_pixel, XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_KEY_PRESS | XCB_EVENT_MASK_STRUCTURE_NOTIFY };
@@ -101,24 +163,23 @@ void swizzle(Class c, SEL orig, SEL new) {
             free(reply);
         }
 
-        uint32_t wid = (uint32_t)[self windowNumber];
         if (wid > 0) {
             NSDictionary *dsprops = @{
                 @"AllowNonIntersectingWindows" : @(YES),
                 @"ExcludeCursorWindow" : @(YES)
             };
-            
+
             __weak typeof(self) weakSelf = self;
             CGDisplayStreamRef (*streamCreate)(uint32_t, uint32_t, CFDictionaryRef, dispatch_queue_t, CGDisplayStreamFrameAvailableHandler) = dlsym(RTLD_DEFAULT, "SLSHWCaptureStreamCreateWithWindow");
-            
+
             if (streamCreate) {
-                CGDisplayStreamRef stream = streamCreate(wid, 0x8000 | 0x40000, (__bridge CFDictionaryRef)dsprops, dispatch_get_main_queue(), 
+                CGDisplayStreamRef stream = streamCreate(wid, 0x8000 | 0x40000, (__bridge CFDictionaryRef)dsprops, dispatch_get_main_queue(),
                     ^(CGDisplayStreamFrameStatus status, uint64_t displayTime, IOSurfaceRef _Nullable frameSurface, CGDisplayStreamUpdateRef _Nullable updateRef) {
                     if (status == 0 && frameSurface) {
                         [weakSelf push_iosurface_to_x11:frameSurface];
                     }
                 });
-                
+
                 if (stream) {
                     self.captureStream = stream;
                     void (*streamStart)(CGDisplayStreamRef) = dlsym(RTLD_DEFAULT, "CGDisplayStreamStart");
