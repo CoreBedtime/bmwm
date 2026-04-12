@@ -797,6 +797,8 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
             // We use the X window dimensions (width x height) directly; the view
             // fills the content area and we correct for any titlebar offset below.
             NSRect sourceFrame = NSMakeRect(root_x, root_y, width, height);
+            
+            // No titlebar adjustment needed - window style handles it
             if (imageView) {
                 imageView.sourceFrame = sourceFrame;
                 imageView.image = image;
@@ -857,9 +859,27 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
             [existingWindow release];
         }
 
+        BOOL isAppKitBacked = NO;
+        xcb_intern_atom_cookie_t atom_cookie = xcb_intern_atom(_connection, 1, 18, "_APP_LAUNCH_APPKIT");
+        xcb_intern_atom_reply_t *atom_reply = xcb_intern_atom_reply(_connection, atom_cookie, NULL);
+        if (atom_reply) {
+            xcb_get_property_cookie_t prop_cookie = xcb_get_property(_connection, 0, window, atom_reply->atom, XCB_ATOM_ANY, 0, 1);
+            xcb_get_property_reply_t *prop_reply = xcb_get_property_reply(_connection, prop_cookie, NULL);
+            BOOL hasProp = (prop_reply && prop_reply->format == 32 && xcb_get_property_value_length(prop_reply) > 0);
+            NSLog(@"[AppSrv] Window 0x%x isAppKitBacked=%d prop_reply=%p format=%d len=%d", window, hasProp, prop_reply, prop_reply ? prop_reply->format : 0, prop_reply ? (int)xcb_get_property_value_length(prop_reply) : 0);
+            if (hasProp) {
+                isAppKitBacked = YES;
+            }
+            free(prop_reply);
+        }
+        free(atom_reply);
+
         NSWindowStyleMask styleMask = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
-                                      NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable |
-                                      NSWindowStyleMaskFullSizeContentView;
+                                      NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
+        if (isAppKitBacked) {
+            styleMask |= NSWindowStyleMaskFullSizeContentView;
+            NSLog(@"[AppSrv] Using FullSizeContentView for window 0x%x", window);
+        }
 
         NSRect frame = NSMakeRect(100, 100, 800, 600);
         NSWindow *cocoaWindow = [[[XClientWindow alloc] initWithContentRect:frame
@@ -867,8 +887,8 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
                                                           backing:NSBackingStoreBuffered
                                                             defer:NO] autorelease];
         [cocoaWindow setReleasedWhenClosed:NO];
-        cocoaWindow.titlebarAppearsTransparent = YES;
-        cocoaWindow.titleVisibility = NSWindowTitleHidden;
+        // cocoaWindow.titlebarAppearsTransparent = YES;
+        // cocoaWindow.titleVisibility = NSWindowTitleHidden;
 
         cocoaWindow.title = [NSString stringWithFormat:@"X Client 0x%x", window];
         cocoaWindow.delegate = self;
@@ -876,7 +896,8 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
         xcb_get_geometry_reply_t *geom = xcb_get_geometry_reply(self.connection,
             xcb_get_geometry(self.connection, window), NULL);
         if (geom) {
-            [cocoaWindow setFrame:NSMakeRect(100, 100, geom->width, geom->height) display:YES];
+            CGFloat extraHeight = isAppKitBacked ? 0 : 28;
+            [cocoaWindow setFrame:NSMakeRect(100, 100, geom->width, geom->height + extraHeight) display:YES];
             free(geom);
         }
 

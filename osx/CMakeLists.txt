@@ -166,14 +166,19 @@ target_compile_options(AppLaunchRunner PRIVATE
 )
 
 target_include_directories(AppLaunchRunner PRIVATE
+    "${XCB_INCLUDE_DIR}"
 )
 
 target_link_libraries(AppLaunchRunner PRIVATE
+    "${XCB_LIBRARY}"
+    "${X11_LIBRARY}"
+    "${XCB_COMPOSITE_LIBRARY}"
     "${RESOLV_LIBRARY}"
     "${FOUNDATION_FRAMEWORK}"
     "${IOKIT_FRAMEWORK}"
     "${SECURITY_FRAMEWORK}"
     "${APPKIT_FRAMEWORK}"
+    "-framework CoreImage"
 )
 
 set_target_properties(AppLaunchRunner PROPERTIES OUTPUT_NAME "AppLaunchRunner")
