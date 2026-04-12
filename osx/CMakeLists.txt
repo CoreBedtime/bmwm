@@ -39,50 +39,6 @@ endif()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 find_program(CODESIGN_EXECUTABLE codesign REQUIRED)
 
-set(FRIDA_CORE_VERSION "17.9.1" CACHE STRING "Frida release tag to use for the frida-core devkit")
-set(FRIDA_CORE_DEVKIT_ROOT "" CACHE PATH "Path to an unpacked frida-core devkit")
-set(FRIDA_CORE_PLATFORM "" CACHE STRING "Override the Frida devkit platform suffix")
-option(FRIDA_CORE_DOWNLOAD "Download the Frida core devkit from GitHub releases when FRIDA_CORE_DEVKIT_ROOT is not set" ON)
-
-if(FRIDA_CORE_PLATFORM STREQUAL "")
-  if(CMAKE_OSX_ARCHITECTURES)
-    set(_FRIDA_CORE_ARCHITECTURE "${CMAKE_OSX_ARCHITECTURES}")
-  else()
-    set(_FRIDA_CORE_ARCHITECTURE "${CMAKE_SYSTEM_PROCESSOR}")
-  endif()
-
-  string(TOLOWER "${_FRIDA_CORE_ARCHITECTURE}" _FRIDA_CORE_ARCHITECTURE)
-  if(_FRIDA_CORE_ARCHITECTURE MATCHES "arm64e")
-    set(FRIDA_CORE_PLATFORM "macos-arm64e")
-  elseif(_FRIDA_CORE_ARCHITECTURE MATCHES "arm64|aarch64")
-    set(FRIDA_CORE_PLATFORM "macos-arm64")
-  elseif(_FRIDA_CORE_ARCHITECTURE MATCHES "x86_64|amd64")
-    set(FRIDA_CORE_PLATFORM "macos-x86_64")
-  else()
-    message(FATAL_ERROR "Unsupported Frida core architecture: ${_FRIDA_CORE_ARCHITECTURE}")
-  endif()
-endif()
-
-if(FRIDA_CORE_DEVKIT_ROOT STREQUAL "")
-  if(NOT FRIDA_CORE_DOWNLOAD)
-    message(FATAL_ERROR "Set FRIDA_CORE_DEVKIT_ROOT or enable FRIDA_CORE_DOWNLOAD")
-  endif()
-
-  set(FRIDA_CORE_NEEDS_DOWNLOAD ON)
-  set(FRIDA_CORE_DOWNLOAD_DIR "${CMAKE_BINARY_DIR}/_deps/frida-core")
-  set(FRIDA_CORE_DOWNLOAD_SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/frida-core-download.cmake")
-  set(FRIDA_CORE_RELEASE_URL "https://github.com/frida/frida/releases/download/${FRIDA_CORE_VERSION}/frida-core-devkit-${FRIDA_CORE_VERSION}-${FRIDA_CORE_PLATFORM}.tar.xz")
-  set(FRIDA_CORE_DEVKIT_ROOT "${FRIDA_CORE_DOWNLOAD_DIR}")
-  set(FRIDA_CORE_ARCHIVE "${FRIDA_CORE_DOWNLOAD_DIR}/frida-core-devkit-${FRIDA_CORE_VERSION}-${FRIDA_CORE_PLATFORM}.tar.xz")
-else()
-  set(FRIDA_CORE_NEEDS_DOWNLOAD OFF)
-endif()
-
-set(FRIDA_CORE_LIBRARY "${FRIDA_CORE_DEVKIT_ROOT}/libfrida-core.a")
-if(EXISTS "${FRIDA_CORE_DEVKIT_ROOT}/libfrida-core.dylib")
-  set(FRIDA_CORE_LIBRARY "${FRIDA_CORE_DEVKIT_ROOT}/libfrida-core.dylib")
-endif()
-
 include(FetchContent)
 set(DOBBY_VERSION "latest" CACHE STRING "Dobby version to use")
 set(DOBBY_REPOSITORY "https://github.com/jmpews/Dobby" CACHE STRING "Dobby repository URL")
@@ -102,44 +58,6 @@ set(Plugin.SymbolResolver ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(dobby)
 
 set(DOBBY_LIBRARY "${dobby_BINARY_DIR}/libdobby.a")
-
-if(FRIDA_CORE_NEEDS_DOWNLOAD)
-  configure_file(
-        FridaCore/download_frida_core.cmake.in
-        "${FRIDA_CORE_DOWNLOAD_SCRIPT}"
-        @ONLY
-    )
-
-  add_custom_command(
-        OUTPUT "${FRIDA_CORE_ARCHIVE}"
-        COMMAND "${CMAKE_COMMAND}"
-                -DFRIDA_CORE_RELEASE_URL=${FRIDA_CORE_RELEASE_URL}
-                -DFRIDA_CORE_ARCHIVE=${FRIDA_CORE_ARCHIVE}
-                -P "${FRIDA_CORE_DOWNLOAD_SCRIPT}"
-        DEPENDS "${FRIDA_CORE_DOWNLOAD_SCRIPT}"
-        VERBATIM
-    )
-
-  add_custom_command(
-        OUTPUT "${FRIDA_CORE_LIBRARY}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${FRIDA_CORE_DOWNLOAD_DIR}"
-        COMMAND "${CMAKE_COMMAND}" -E tar xJf "${FRIDA_CORE_ARCHIVE}"
-        WORKING_DIRECTORY "${FRIDA_CORE_DOWNLOAD_DIR}"
-        DEPENDS "${FRIDA_CORE_ARCHIVE}"
-        VERBATIM
-    )
-
-  add_custom_target(frida-core-devkit DEPENDS "${FRIDA_CORE_LIBRARY}")
-endif()
-
-add_library(FridaCoreDevkit UNKNOWN IMPORTED GLOBAL)
-set_target_properties(FridaCoreDevkit PROPERTIES
-    IMPORTED_LOCATION "${FRIDA_CORE_LIBRARY}"
-)
-
-if(TARGET frida-core-devkit)
-  add_dependencies(FridaCoreDevkit frida-core-devkit)
-endif()
 
 add_library(ApplicatorConfig STATIC
     Config/lua_config.c
@@ -215,7 +133,7 @@ add_executable(ApplicationServer
 )
 
 target_compile_options(ApplicationServer PRIVATE
-    $<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>
+    $<$<COMPILE_LANGUAGE:OBJC>:-fno-objc-arc>
 )
 
 target_include_directories(ApplicationServer PRIVATE
@@ -229,6 +147,7 @@ target_link_libraries(ApplicationServer PRIVATE
     "${XCB_XTEST_LIBRARY}"
     "${XCB_RENDER_LIBRARY}"
     "${XCB_XFIXES_LIBRARY}"
+    "${XCB_COMPOSITE_LIBRARY}"
     "${X11_LIBRARY}"
     "${XCURSOR_LIBRARY}"
     "${COREGRAPHICS_FRAMEWORK}"
@@ -242,65 +161,20 @@ add_library(AppLaunchRunner SHARED
     AppLaunch/AppLaunchRunner.m
 )
 
-find_program(FRIDA_COMPILE_EXECUTABLE
-    NAMES frida-compile
-    HINTS /Library/Frameworks/Python.framework/Versions/3.10/bin
-)
-
-if(NOT FRIDA_COMPILE_EXECUTABLE)
-  message(FATAL_ERROR "frida-compile is required to bundle AppLaunchRunner")
-endif()
-
-set(APP_LAUNCH_SCRIPT_ENTRY "${CMAKE_CURRENT_SOURCE_DIR}/AppLaunch/AppLaunchRunner.entry.js")
-set(APP_LAUNCH_SCRIPT_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/AppLaunch/AppLaunchRunner.script.js")
-set(APP_LAUNCH_BUNDLED_SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/AppLaunchRunner.bundle.js")
-
-add_custom_command(
-    OUTPUT "${APP_LAUNCH_BUNDLED_SCRIPT}"
-    COMMAND "${FRIDA_COMPILE_EXECUTABLE}" "${APP_LAUNCH_SCRIPT_ENTRY}" -o "${APP_LAUNCH_BUNDLED_SCRIPT}"
-    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/AppLaunch"
-    DEPENDS
-        "${APP_LAUNCH_SCRIPT_ENTRY}"
-        "${APP_LAUNCH_SCRIPT_SOURCE}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/AppLaunch/vendor/frida-objc-bridge/index.js"
-        "${CMAKE_CURRENT_SOURCE_DIR}/AppLaunch/vendor/frida-objc-bridge/lib/api.js"
-        "${CMAKE_CURRENT_SOURCE_DIR}/AppLaunch/vendor/frida-objc-bridge/lib/fastpaths.js"
-        "${CMAKE_CURRENT_SOURCE_DIR}/AppLaunch/vendor/frida-objc-bridge/package.json"
-    VERBATIM
-)
-
-add_custom_target(AppLaunchRunnerBundle DEPENDS "${APP_LAUNCH_BUNDLED_SCRIPT}")
-add_dependencies(AppLaunchRunner AppLaunchRunnerBundle)
-
 target_compile_options(AppLaunchRunner PRIVATE
     $<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>
 )
 
-target_link_options(AppLaunchRunner PRIVATE
-    "-Wl,-sectcreate,__TEXT,__app_launch_js,${APP_LAUNCH_BUNDLED_SCRIPT}"
-)
-
-set_target_properties(AppLaunchRunner PROPERTIES
-    LINK_DEPENDS "${APP_LAUNCH_BUNDLED_SCRIPT}"
-)
-
 target_include_directories(AppLaunchRunner PRIVATE
-    "${FRIDA_CORE_DEVKIT_ROOT}/include"
-    "${FRIDA_CORE_DEVKIT_ROOT}"
 )
 
 target_link_libraries(AppLaunchRunner PRIVATE
-    FridaCoreDevkit
     "${RESOLV_LIBRARY}"
     "${FOUNDATION_FRAMEWORK}"
     "${IOKIT_FRAMEWORK}"
     "${SECURITY_FRAMEWORK}"
     "${APPKIT_FRAMEWORK}"
 )
-
-if(TARGET frida-core-devkit)
-  add_dependencies(AppLaunchRunner frida-core-devkit)
-endif()
 
 set_target_properties(AppLaunchRunner PROPERTIES OUTPUT_NAME "AppLaunchRunner")
 

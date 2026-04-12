@@ -437,8 +437,6 @@ static bool depacify_executable(const char *executable_path, char *tmp_path, siz
 
 extern char **environ;
 
-typedef int (*AppLaunchRunFunc)(int argc, char *argv[]);
-
 static char *copy_helper_path(void)
 {
     uint32_t size = 0;
@@ -842,16 +840,17 @@ int     posix_spawnattr_set_login_np(const posix_spawnattr_t * __restrict, const
 
 
 static bool launch_executable(const char *executable_path,
+                              const char *helper_path,
                               int argc,
                               char *argv[],
                               pid_t *child_pid_out)
 {
     size_t spawn_argc = (size_t) argc - 1;
     char **spawn_argv = calloc(spawn_argc + 1, sizeof(char *));
+    char **env = NULL;
     pid_t child_pid = 0;
     int rc = 0;
     posix_spawnattr_t attrs;
-    short flags = 0;
 
     if (spawn_argv == NULL) {
         return false;
@@ -862,48 +861,52 @@ static bool launch_executable(const char *executable_path,
         spawn_argv[j - 1] = argv[j];
     }
 
-    rc = posix_spawnattr_init(&attrs);
-    if (rc != 0) {
+    int env_count = 0;
+    for (char **e = environ; *e != NULL; e++) {
+        env_count++;
+    }
+
+    env = calloc(env_count + 2, sizeof(char *));
+    if (env == NULL) {
         free(spawn_argv);
         return false;
     }
 
-    rc = posix_spawnattr_getflags(&attrs, &flags);
-    if (rc == 0) {
-        flags |= POSIX_SPAWN_START_SUSPENDED;
-        rc = posix_spawnattr_setflags(&attrs, flags);
+    int idx = 0;
+    size_t dyld_len = strlen("DYLD_INSERT_LIBRARIES=") + strlen(helper_path) + 1;
+    char *dyld_env = malloc(dyld_len);
+    if (dyld_env == NULL) {
+        free(spawn_argv);
+        free(env);
+        return false;
+    }
+    snprintf(dyld_env, dyld_len, "DYLD_INSERT_LIBRARIES=%s", helper_path);
+    env[idx++] = dyld_env;
+
+    for (char **e = environ; *e != NULL; e++) {
+        if (strncmp(*e, "DYLD_INSERT_LIBRARIES=", 21) == 0) {
+            continue;
+        }
+        env[idx++] = *e;
+    }
+    env[idx] = NULL;
+
+    rc = posix_spawnattr_init(&attrs);
+    if (rc != 0) {
+        free(spawn_argv);
+        free(dyld_env);
+        free(env);
+        return false;
     }
 
-    // const char *user_id_str = getenv("USER_ID") ?: "501";
-    // if (user_id_str != NULL && user_id_str[0] != '\0') {
-    //     char *end = NULL;
-    //     errno = 0;
-    //     unsigned long uid_val = strtoul(user_id_str, &end, 10);
-    //     if (errno == 0 && end != user_id_str && *end == '\0' && uid_val <= UINT32_MAX) {
-    //         uid_t uid = (uid_t)uid_val;
-    //         gid_t gid = 0;
-
-    //         struct passwd *pw = getpwuid(uid);
-    //         if (pw != NULL) {
-    //             gid = pw->pw_gid;
-    //         }
-
-    //         rc = posix_spawnattr_set_uid_np(&attrs, uid);
-    //         if (rc == 0) {
-    //             rc = posix_spawnattr_set_gid_np(&attrs, gid);
-    //         }
-    //         if (rc == 0) {
-    //             fprintf(stderr, "[bootstrap] launching as uid=%u gid=%u\n", uid, gid);
-    //         }
-    //     }
-    // }
-
     if (rc == 0) {
-        rc = posix_spawn(&child_pid, executable_path, NULL, &attrs, spawn_argv, environ);
+        rc = posix_spawn(&child_pid, executable_path, NULL, &attrs, spawn_argv, env);
     }
 
     posix_spawnattr_destroy(&attrs);
     free(spawn_argv);
+    free(dyld_env);
+    free(env);
 
     if (rc == 0 && child_pid_out != NULL) {
         *child_pid_out = child_pid;
@@ -981,38 +984,25 @@ int main(int argc, char *argv[])
         }
     }
 
-    fprintf(stderr, "[bootstrap] launching %s\n", executable_path);
-    if (!launch_executable(executable_path, argc, argv, &child_pid)) {
+    fprintf(stderr, "[bootstrap] launching %s with DYLD_INSERT_LIBRARIES=%s\n", executable_path, helper_path);
+    if (!launch_executable(executable_path, helper_path, argc, argv, &child_pid)) {
         fprintf(stderr, "Failed to launch target executable: %s\n", executable_path);
         free(helper_path);
         return 1;
     }
 
-    char child_pid_buf[32];
-    snprintf(child_pid_buf, sizeof(child_pid_buf), "%d", (int) child_pid);
-    setenv("APP_LAUNCH_TARGET_PID", child_pid_buf, 1);
-
-    fprintf(stderr, "[bootstrap] loading %s\n", helper_path);
-    void *handle = dlopen(helper_path, RTLD_NOW);
-    if (handle == NULL) {
-        fprintf(stderr, "Failed to load helper: %s\n", dlerror());
-        free(helper_path);
-        return 1;
-    }
-
-    fprintf(stderr, "[bootstrap] loaded helper\n");
     free(helper_path);
 
-    AppLaunchRunFunc run = (AppLaunchRunFunc) dlsym(handle, "AppLaunchRun");
-    if (run == NULL) {
-        fprintf(stderr, "Failed to resolve AppLaunchRun: %s\n", dlerror());
-        dlclose(handle);
-        return 1;
-    }
+    fprintf(stderr, "[bootstrap] launched, waiting for exit...\n");
+    int status;
+    waitpid(child_pid, &status, 0);
 
-    fprintf(stderr, "[bootstrap] calling helper\n");
-    int exit_code = run(argc, argv);
-    fprintf(stderr, "[bootstrap] helper returned %d\n", exit_code);
-    dlclose(handle);
-    return exit_code;
+    if (WIFEXITED(status)) {
+        fprintf(stderr, "[bootstrap] target exited with code %d\n", WEXITSTATUS(status));
+        return WEXITSTATUS(status);
+    } else if (WIFSIGNALED(status)) {
+        fprintf(stderr, "[bootstrap] target killed by signal %d\n", WTERMSIG(status));
+        return 128 + WTERMSIG(status);
+    }
+    return 0;
 }

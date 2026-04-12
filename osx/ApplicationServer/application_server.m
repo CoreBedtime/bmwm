@@ -4,6 +4,7 @@
 #import <xcb/xcb_util.h>
 #import <xcb/xcb_event.h>
 #import <xcb/xtest.h>
+#import <xcb/composite.h>
 
 #include <sys/wait.h>
 #include <unistd.h>
@@ -152,12 +153,12 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
 @property (nonatomic, assign) xcb_window_t rootWindow;
 @property (nonatomic, assign) pid_t xorg_pid;
 @property (nonatomic, assign) int display_number;
-@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSWindow *> *windows;
-@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSImageView *> *imageViews;
 @property (nonatomic, assign) BOOL running;
-@property (nonatomic, copy) NSString *xorgConfigPath;
-@property (nonatomic, copy) NSString *xorgLogPath;
-@property (nonatomic, strong) NSTimer *refreshTimer;
+@property (nonatomic, assign) NSMutableDictionary<NSNumber *, NSWindow *> *windows;
+@property (nonatomic, assign) NSMutableDictionary<NSNumber *, NSImageView *> *imageViews;
+@property (nonatomic, assign) NSString *xorgConfigPath;
+@property (nonatomic, assign) NSString *xorgLogPath;
+@property (nonatomic, assign) NSTimer *refreshTimer;
 @end
 
 @interface XClientView : NSImageView
@@ -166,6 +167,7 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
 @property (nonatomic, assign) xcb_window_t rootWindow;
 @property (nonatomic, assign) NSRect sourceFrame;
 @property (nonatomic, assign) NSEventModifierFlags modifierFlagsState;
+- (BOOL)isAppKitBacked;
 @end
 
 @implementation XClientView
@@ -190,6 +192,28 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
         xcb_configure_window(self.connection, self.xWindow, XCB_CONFIG_WINDOW_STACK_MODE, &stackMode);
         xcb_flush(self.connection);
     }
+}
+
+- (BOOL)isAppKitBacked {
+    if (self.connection == NULL || self.xWindow == 0) {
+        return NO;
+    }
+    xcb_intern_atom_cookie_t cookie = xcb_intern_atom(self.connection, 1, 18, "_APP_LAUNCH_APPKIT");
+    xcb_intern_atom_reply_t *reply = xcb_intern_atom_reply(self.connection, cookie, NULL);
+    if (reply == NULL) {
+        return NO;
+    }
+    xcb_atom_t propAtom = reply->atom;
+    free(reply);
+
+    xcb_get_property_cookie_t propCookie = xcb_get_property(self.connection, 0, self.xWindow, propAtom, XCB_ATOM_ANY, 0, 1);
+    xcb_get_property_reply_t *propReply = xcb_get_property_reply(self.connection, propCookie, NULL);
+    if (propReply == NULL) {
+        return NO;
+    }
+    BOOL exists = (propReply->format == 8 && xcb_get_property_value_length(propReply) > 0);
+    free(propReply);
+    return exists;
 }
 
 - (BOOL)acceptsFirstMouse:(NSEvent *)event {
@@ -219,6 +243,12 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
 
     int root_x = (int)self.sourceFrame.origin.x + local_x;
     int root_y = (int)self.sourceFrame.origin.y + local_y;
+
+    NSLog(@"[AppSrv] updateX11Pointer: loc=(%.1f,%.1f) bounds=%.0fx%.0f srcFrame=(%.0f,%.0f %.0fx%.0f) norm=(%.3f,%.3f) local=(%d,%d) root=(%d,%d)",
+          loc.x, loc.y, boundsWidth, boundsHeight,
+          self.sourceFrame.origin.x, self.sourceFrame.origin.y,
+          self.sourceFrame.size.width, self.sourceFrame.size.height,
+          normalizedX, normalizedY, local_x, local_y, root_x, root_y);
 
     xcb_screen_t *screen = xcb_setup_roots_iterator(xcb_get_setup(self.connection)).data;
     xcb_window_t rootWindow = self.rootWindow != 0 ? self.rootWindow : screen->root;
@@ -347,8 +377,8 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _windows = [NSMutableDictionary dictionary];
-        _imageViews = [NSMutableDictionary dictionary];
+        _windows = [[NSMutableDictionary alloc] init];
+        _imageViews = [[NSMutableDictionary alloc] init];
         _running = NO;
         _xorg_pid = -1;
     }
@@ -357,17 +387,25 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
 
 - (void)closeCocoaWindowForXWindow:(xcb_window_t)xWindow {
     NSNumber *windowKey = @(xWindow);
-    NSWindow *window = self.windows[windowKey];
+    NSWindow *window = [self.windows objectForKey:windowKey];
     if (window == nil) {
         return;
     }
 
+    [window retain];
     [self.windows removeObjectForKey:windowKey];
-    [self.imageViews removeObjectForKey:windowKey];
+
+    NSImageView *imageView = [self.imageViews objectForKey:windowKey];
+    if (imageView) {
+        [imageView removeFromSuperview];
+        [self.imageViews removeObjectForKey:windowKey];
+    }
 
     window.delegate = nil;
+    [window setReleasedWhenClosed:NO];
     [window orderOut:nil];
     [window close];
+    [window release];
 }
 
 - (const char *)findXorg {
@@ -385,22 +423,22 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
     if (config_fd < 0) {
         return -1;
     }
-    
+
     _xorgConfigPath = [NSString stringWithUTF8String:config_template];
-    
+
     char log_path[256];
     snprintf(log_path, sizeof(log_path), "/tmp/applicator-xorg-%ld.log", (long)getpid());
     _xorgLogPath = [NSString stringWithUTF8String:log_path];
-    
+
     char mode_name[] = "Mode0";
     char modeline[] = "173.00 1920 2048 2248 2576 1080 1083 1088 1120 -hsync +vsync";
-    
+
     FILE *config = fdopen(config_fd, "w");
     if (!config) {
         close(config_fd);
         return -1;
     }
-    
+
     fprintf(config,
         "Section \"ServerLayout\"\n"
         "    Identifier \"Layout0\"\n"
@@ -430,6 +468,7 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
         "    Identifier \"DummyDevice\"\n"
         "    Driver \"dummy\"\n"
         "    VideoRam 512000\n"
+        "    Option \"Shadow\" \"no\"\n"
         "EndSection\n"
         "\n"
         "Section \"Screen\"\n"
@@ -441,10 +480,11 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
         "        Depth 24\n"
         "        Modes \"%s\"\n"
         "        Virtual %d %d\n"
+        "        ViewPort 0 0\n"
         "    EndSubSection\n"
         "EndSection\n",
         mode_name, modeline, mode_name, width, height);
-    
+
     fclose(config);
     return 0;
 }
@@ -453,28 +493,28 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
     char buffer[64] = {0};
     ssize_t total_read = 0;
     struct timeval timeout = { .tv_sec = 10, .tv_usec = 0 };
-    
+
     fd_set read_fds;
     FD_ZERO(&read_fds);
     FD_SET(fd, &read_fds);
-    
+
     int select_result = select(fd + 1, &read_fds, NULL, NULL, &timeout);
     if (select_result <= 0) {
         return -1;
     }
-    
+
     ssize_t n = read(fd, buffer, sizeof(buffer) - 1);
     if (n <= 0) {
         return -1;
     }
     total_read += n;
-    
+
     char *endptr = NULL;
     long display = strtol(buffer, &endptr, 10);
     if (endptr == buffer || display < 0 || display > 1024) {
         return -1;
     }
-    
+
     *displayNumber = (int)display;
     return 0;
 }
@@ -485,21 +525,21 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
         NSLog(@"Failed to find Xorg");
         return -1;
     }
-    
+
     mkdir("/tmp/.X11-unix", 0777);
     chmod("/tmp/.X11-unix", 01777);
-    
+
     if ([self writeXorgConfigWithWidth:1920 height:1080] != 0) {
         NSLog(@"Failed to write Xorg config");
         return -1;
     }
-    
+
     int display_pipe[2];
     if (pipe(display_pipe) != 0) {
         NSLog(@"Failed to create display pipe: %s", strerror(errno));
         return -1;
     }
-    
+
     pid_t pid = fork();
     if (pid < 0) {
         close(display_pipe[0]);
@@ -507,14 +547,14 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
         NSLog(@"Failed to fork: %s", strerror(errno));
         return -1;
     }
-    
+
     if (pid == 0) {
         close(display_pipe[0]);
         if (dup2(display_pipe[1], 99) < 0) {
             _exit(127);
         }
         close(display_pipe[1]);
-        
+
         int devnull = open("/dev/null", O_RDWR);
         if (devnull >= 0) {
             dup2(devnull, STDIN_FILENO);
@@ -524,10 +564,10 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
                 close(devnull);
             }
         }
-        
+
         char *argv[16];
         size_t argc = 0;
-        
+
         argv[argc++] = (char *)xorg;
         argv[argc++] = "-quiet";
         argv[argc++] = "-config";
@@ -538,13 +578,13 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
         argv[argc++] = "-displayfd";
         argv[argc++] = "99";
         argv[argc] = NULL;
-        
+
         execv(xorg, argv);
         _exit(127);
     }
-    
+
     close(display_pipe[1]);
-    
+
     int display_num = -1;
     if ([self waitForDisplayFd:display_pipe[0] displayNumber:&display_num] != 0) {
         close(display_pipe[0]);
@@ -552,10 +592,10 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
         return -1;
     }
     close(display_pipe[0]);
-    
+
     _display_number = display_num;
     _xorg_pid = pid;
-    
+
     NSLog(@"Xorg started on display :%d", _display_number);
     return 0;
 }
@@ -563,7 +603,7 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
 - (BOOL)connectToXServer {
     char display[64];
     snprintf(display, sizeof(display), ":%d", _display_number);
-    
+
     for (int attempt = 0; attempt < 50; attempt++) {
         _connection = xcb_connect(display, NULL);
         if (_connection && !xcb_connection_has_error(_connection)) {
@@ -571,19 +611,19 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
         }
         usleep(100000);
     }
-    
+
     if (xcb_connection_has_error(_connection)) {
         NSLog(@"Failed to connect to X server");
         return NO;
     }
-    
+
     const xcb_setup_t *setup = xcb_get_setup(_connection);
     xcb_screen_iterator_t iter = xcb_setup_roots_iterator(setup);
     _screen = iter.data;
     _rootWindow = _screen->root;
-    
-    uint32_t event_mask = XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY | 
-                          XCB_EVENT_MASK_EXPOSURE | 
+
+    uint32_t event_mask = XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY |
+                          XCB_EVENT_MASK_EXPOSURE |
                           XCB_EVENT_MASK_BUTTON_PRESS |
                           XCB_EVENT_MASK_BUTTON_RELEASE |
                           XCB_EVENT_MASK_POINTER_MOTION |
@@ -591,8 +631,15 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
                           XCB_EVENT_MASK_KEY_RELEASE;
     xcb_change_window_attributes(_connection, _rootWindow, XCB_CW_EVENT_MASK, &event_mask);
     
+    xcb_composite_query_version_cookie_t comp_cookie = xcb_composite_query_version(_connection, 0, 4);
+    xcb_composite_query_version_reply_t *comp_reply = xcb_composite_query_version_reply(_connection, comp_cookie, NULL);
+    if (comp_reply) {
+        xcb_composite_redirect_subwindows(_connection, _rootWindow, XCB_COMPOSITE_REDIRECT_AUTOMATIC);
+        free(comp_reply);
+    }
+
     xcb_flush(_connection);
-    
+
     return YES;
 }
 
@@ -600,24 +647,27 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
     if ([self spawnXorg] != 0) {
         return NO;
     }
-    
+
     if (![self connectToXServer]) {
         return NO;
     }
-    
+
     _running = YES;
-    
+
+    __block id blockSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
         self.refreshTimer = [NSTimer scheduledTimerWithTimeInterval:1.0/60.0 repeats:YES block:^(NSTimer * _Nonnull timer) {
-            for (NSNumber *windowId in self.windows) {
-                [self captureAndDisplayWindow:(xcb_window_t)[windowId unsignedIntValue] cocoaWindow:self.windows[windowId]];
+            [blockSelf retain];
+            for (NSNumber *windowId in [blockSelf windows]) {
+                [blockSelf captureAndDisplayWindow:(xcb_window_t)[windowId unsignedIntValue]];
             }
+            [blockSelf release];
         }];
         [[NSRunLoop mainRunLoop] addTimer:self.refreshTimer forMode:NSRunLoopCommonModes];
     });
-    
+
     [self runEventLoop];
-    
+
     return YES;
 }
 
@@ -635,7 +685,7 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
 
 - (void)handleEvent:(xcb_generic_event_t *)event {
     uint8_t type = event->response_type & ~0x80;
-    
+
     switch (type) {
         case XCB_MAP_NOTIFY:
             [self handleMapNotify:(xcb_map_notify_event_t *)event];
@@ -655,38 +705,44 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
     }
 }
 
-- (void)captureAndDisplayWindow:(xcb_window_t)xWindow cocoaWindow:(NSWindow *)cocoaWindow {
+- (void)captureAndDisplayWindow:(xcb_window_t)xWindow {
+    [self retain];
+
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         xcb_get_geometry_reply_t *geom = xcb_get_geometry_reply(self.connection,
             xcb_get_geometry(self.connection, xWindow), NULL);
-        
-        if (!geom) return;
-        
-        xcb_get_image_cookie_t cookie = xcb_get_image(self.connection,
-            XCB_IMAGE_FORMAT_Z_PIXMAP, xWindow, 0, 0, geom->width, geom->height, UINT32_MAX);
-        
-        xcb_get_image_reply_t *reply = xcb_get_image_reply(self.connection, cookie, NULL);
-        
-        if (!reply) {
-            free(geom);
+
+        if (!geom) {
+            [self release];
             return;
         }
-        
+
+        xcb_get_image_cookie_t cookie = xcb_get_image(self.connection,
+            XCB_IMAGE_FORMAT_Z_PIXMAP, xWindow, 0, 0, geom->width, geom->height, UINT32_MAX);
+
+        xcb_get_image_reply_t *reply = xcb_get_image_reply(self.connection, cookie, NULL);
+
+        if (!reply) {
+            free(geom);
+            [self release];
+            return;
+        }
+
         int root_x = geom->x;
         int root_y = geom->y;
         int width = geom->width;
         int height = geom->height;
         free(geom);
-        
+
         const uint8_t *data = xcb_get_image_data(reply);
         int data_len = xcb_get_image_data_length(reply);
-        
+
         if (width <= 0 || height <= 0 || data_len <= 0) {
             free(reply);
             return;
         }
-        
-        NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] 
+
+        NSBitmapImageRep *bitmap = [[[NSBitmapImageRep alloc]
             initWithBitmapDataPlanes:NULL
                         pixelsWide:width
                         pixelsHigh:height
@@ -696,14 +752,14 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
                           isPlanar:NO
                     colorSpaceName:NSCalibratedRGBColorSpace
                        bytesPerRow:width * 4
-                      bitsPerPixel:32];
-        
+                      bitsPerPixel:32] autorelease];
+
         uint8_t *bitmap_data = [bitmap bitmapData];
         if (!bitmap_data) {
             free(reply);
             return;
         }
-        
+
         // If data_len is exactly width * height * 4, we have a 32bpp ZPixmap
         if (data_len >= width * height * 4) {
             memcpy(bitmap_data, data, width * height * 4);
@@ -725,18 +781,27 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
                 bitmap_data[i*4 + 3] = 255;
             }
         }
-        
-        NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(width, height)];
+
+        NSImage *image = [[[NSImage alloc] initWithSize:NSMakeSize(width, height)] autorelease];
         [image addRepresentation:bitmap];
-        
+
         dispatch_async(dispatch_get_main_queue(), ^{
+            NSWindow *cocoaWindow = [self.windows objectForKey:@(xWindow)];
+            if (!cocoaWindow) {
+                [self release];
+                return;
+            }
+
             XClientView *imageView = (XClientView *)self.imageViews[@(xWindow)];
+            // sourceFrame: origin in X11 root coords, size = X window dimensions.
+            // We use the X window dimensions (width x height) directly; the view
+            // fills the content area and we correct for any titlebar offset below.
             NSRect sourceFrame = NSMakeRect(root_x, root_y, width, height);
             if (imageView) {
                 imageView.sourceFrame = sourceFrame;
                 imageView.image = image;
             } else {
-                XClientView *newView = [[XClientView alloc] initWithFrame:cocoaWindow.contentView.bounds];
+                XClientView *newView = [[[XClientView alloc] initWithFrame:cocoaWindow.contentView.bounds] autorelease];
                 newView.xWindow = xWindow;
                 newView.connection = self.connection;
                 newView.rootWindow = self.rootWindow;
@@ -744,62 +809,88 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
                 newView.imageScaling = NSImageScaleAxesIndependently;
                 newView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
                 newView.image = image;
-                
+
                 // Add tracking area for mouse movement
-                NSTrackingArea *trackingArea = [[NSTrackingArea alloc] initWithRect:newView.bounds
+                NSTrackingArea *trackingArea = [[[NSTrackingArea alloc] initWithRect:newView.bounds
                                                                             options:NSTrackingMouseMoved | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect
                                                                               owner:newView
-                                                                           userInfo:nil];
+                                                                         userInfo:nil] autorelease];
                 [newView addTrackingArea:trackingArea];
-                
+
                 [cocoaWindow.contentView addSubview:newView];
                 [cocoaWindow makeFirstResponder:newView];
                 self.imageViews[@(xWindow)] = newView;
             }
+            [self release];
         });
-        
+
         free(reply);
     });
 }
 
 - (void)handleMapNotify:(xcb_map_notify_event_t *)event {
     xcb_window_t window = event->window;
-    
+
     if (window == _rootWindow) return;
-    
+
     xcb_get_window_attributes_reply_t *reply = xcb_get_window_attributes_reply(
         _connection, xcb_get_window_attributes(_connection, window), NULL);
-    
+
     if (!reply) return;
-    
+
+    [self retain];
     dispatch_async(dispatch_get_main_queue(), ^{
-        NSWindowStyleMask styleMask = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable;
-        
+        NSNumber *windowKey = @(window);
+
+        NSWindow *existingWindow = [self.windows objectForKey:windowKey];
+        if (existingWindow) {
+            [existingWindow retain];
+            [self.windows removeObjectForKey:windowKey];
+            NSImageView *existingImageView = [self.imageViews objectForKey:windowKey];
+            if (existingImageView) {
+                [existingImageView removeFromSuperview];
+                [self.imageViews removeObjectForKey:windowKey];
+            }
+            [existingWindow setReleasedWhenClosed:NO];
+            [existingWindow orderOut:nil];
+            [existingWindow close];
+            [existingWindow release];
+        }
+
+        NSWindowStyleMask styleMask = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                                      NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable |
+                                      NSWindowStyleMaskFullSizeContentView;
+
         NSRect frame = NSMakeRect(100, 100, 800, 600);
-        NSWindow *cocoaWindow = [[XClientWindow alloc] initWithContentRect:frame
+        NSWindow *cocoaWindow = [[[XClientWindow alloc] initWithContentRect:frame
                                                         styleMask:styleMask
                                                           backing:NSBackingStoreBuffered
-                                                            defer:NO];
-        
+                                                            defer:NO] autorelease];
+        [cocoaWindow setReleasedWhenClosed:NO];
+        cocoaWindow.titlebarAppearsTransparent = YES;
+        cocoaWindow.titleVisibility = NSWindowTitleHidden;
+
         cocoaWindow.title = [NSString stringWithFormat:@"X Client 0x%x", window];
         cocoaWindow.delegate = self;
-        
+
         xcb_get_geometry_reply_t *geom = xcb_get_geometry_reply(self.connection,
             xcb_get_geometry(self.connection, window), NULL);
         if (geom) {
             [cocoaWindow setFrame:NSMakeRect(100, 100, geom->width, geom->height) display:YES];
             free(geom);
         }
-        
+
         self.windows[@(window)] = cocoaWindow;
         [cocoaWindow makeKeyAndOrderFront:nil];
-        
-        [self captureAndDisplayWindow:window cocoaWindow:cocoaWindow];
+
+        [self captureAndDisplayWindow:window];
+
+        xcb_configure_window(_connection, window, XCB_CONFIG_WINDOW_BORDER_WIDTH, (uint32_t[]){0});
+        xcb_map_window(_connection, window);
+
+        [self release];
     });
-    
-    xcb_configure_window(_connection, window, XCB_CONFIG_WINDOW_BORDER_WIDTH, (uint32_t[]){0});
-    xcb_map_window(_connection, window);
-    
+
     free(reply);
 }
 
@@ -821,7 +912,7 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
         if (window) {
             NSRect frame = NSMakeRect(event->x, event->y, event->width, event->height);
             [window setFrame:frame display:YES];
-            [self captureAndDisplayWindow:event->window cocoaWindow:window];
+            [self captureAndDisplayWindow:event->window];
         }
     });
 }
@@ -830,7 +921,7 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
     dispatch_async(dispatch_get_main_queue(), ^{
         NSWindow *window = self.windows[@(event->window)];
         if (window) {
-            [self captureAndDisplayWindow:event->window cocoaWindow:window];
+            [self captureAndDisplayWindow:event->window];
         }
     });
 }
@@ -851,7 +942,7 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
             [cocoaWindow makeFirstResponder:firstResponder];
         }
         xcb_set_input_focus(_connection, XCB_INPUT_FOCUS_POINTER_ROOT, xWindow, XCB_CURRENT_TIME);
-        
+
         uint32_t values[] = { XCB_STACK_MODE_ABOVE };
         xcb_configure_window(_connection, xWindow, XCB_CONFIG_WINDOW_STACK_MODE, values);
         xcb_flush(_connection);
@@ -881,17 +972,20 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
 
 - (void)stop {
     _running = NO;
+    [self.refreshTimer invalidate];
+    self.refreshTimer = nil;
+
     if (_connection) {
         xcb_disconnect(_connection);
         _connection = NULL;
     }
-    
+
     if (_xorg_pid > 0) {
         kill(_xorg_pid, SIGTERM);
         waitpid(_xorg_pid, NULL, 0);
         _xorg_pid = -1;
     }
-    
+
     if (_xorgConfigPath) {
         unlink([_xorgConfigPath UTF8String]);
     }
@@ -899,6 +993,11 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
 
 - (void)dealloc {
     [self stop];
+    [_windows release];
+    [_imageViews release];
+    [_xorgConfigPath release];
+    [_xorgLogPath release];
+    [super dealloc];
 }
 
 @end
@@ -908,15 +1007,17 @@ int main(int argc, char *argv[]) {
         NSApplication *app = [NSApplication sharedApplication];
         [app setActivationPolicy:NSApplicationActivationPolicyRegular];
         [app activateIgnoringOtherApps:YES];
-        
+
         ApplicationServer *server = [[ApplicationServer alloc] init];
         app.delegate = server;
 
         if (![server start]) {
+            [server release];
             return 1;
         }
 
         [app run];
+        [server release];
     }
     return 0;
 }
