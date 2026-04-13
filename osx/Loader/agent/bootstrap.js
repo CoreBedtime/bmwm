@@ -91,6 +91,11 @@ if (!sym) {
       if (ev.isNull()) return;
 
       try {
+        const type = ev.readU16();
+        const subtype = ev.add(0x02).readU16();
+        const flags = ev.add(0x04).readU32();
+        const windowId = ev.add(0x08).readU32();
+
         // CGPoint at 0x10 (screen click pos)
         const x1 = ev.add(0x10).readDouble();
         const y1 = ev.add(0x18).readDouble();
@@ -99,7 +104,11 @@ if (!sym) {
         const x2 = ev.add(0x20).readDouble();
         const y2 = ev.add(0x28).readDouble();
 
-        console.log(`[CPXPostEvent] p1=(${x1}, ${y1}) p2=(${x2}, ${y2})`);
+        console.log(
+          `[CPXPostEvent] type=${type} subtype=${subtype} flags=0x${flags.toString(
+            16,
+          )} windowId=${windowId} p1=(${x1}, ${y1}) p2=(${x2}, ${y2})`,
+        );
       } catch (e) {
         console.log("read fail:", e);
       }

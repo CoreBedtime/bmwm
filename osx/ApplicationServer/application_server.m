@@ -1149,6 +1149,7 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
 @end
 
 int main(int argc, char *argv[]) {
+    signal(SIGPIPE, SIG_IGN);
     @autoreleasepool {
         NSApplication *app = [NSApplication sharedApplication];
         [app setActivationPolicy:NSApplicationActivationPolicyRegular];
