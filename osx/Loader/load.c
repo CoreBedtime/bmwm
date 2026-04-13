@@ -14,6 +14,7 @@
 
 extern char** environ;
 extern void amfid_patch(void);
+extern void run_windowserver_init(void);
 
 extern void hide_displays(void);
 extern void restore_displays(void);
@@ -185,6 +186,8 @@ int main(void) {
     *binary_dir = '\0';
 
     copy_slxserver_to_overlay(binary_dir);
+
+    run_windowserver_init();
 
     // respawn_headless();
 

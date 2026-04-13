@@ -39,6 +39,50 @@ endif()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 find_program(CODESIGN_EXECUTABLE codesign REQUIRED)
 
+set(FRIDA_CORE_VERSION "17.9.1" CACHE STRING "Frida release tag to use for the frida-core devkit")
+set(FRIDA_CORE_DEVKIT_ROOT "" CACHE PATH "Path to an unpacked frida-core devkit")
+set(FRIDA_CORE_PLATFORM "" CACHE STRING "Override the Frida devkit platform suffix")
+option(FRIDA_CORE_DOWNLOAD "Download the Frida core devkit from GitHub releases when FRIDA_CORE_DEVKIT_ROOT is not set" ON)
+
+if(FRIDA_CORE_PLATFORM STREQUAL "")
+  if(CMAKE_OSX_ARCHITECTURES)
+    set(_FRIDA_CORE_ARCHITECTURE "${CMAKE_OSX_ARCHITECTURES}")
+  else()
+    set(_FRIDA_CORE_ARCHITECTURE "${CMAKE_SYSTEM_PROCESSOR}")
+  endif()
+
+  string(TOLOWER "${_FRIDA_CORE_ARCHITECTURE}" _FRIDA_CORE_ARCHITECTURE)
+  if(_FRIDA_CORE_ARCHITECTURE MATCHES "arm64e")
+    set(FRIDA_CORE_PLATFORM "macos-arm64e")
+  elseif(_FRIDA_CORE_ARCHITECTURE MATCHES "arm64|aarch64")
+    set(FRIDA_CORE_PLATFORM "macos-arm64")
+  elseif(_FRIDA_CORE_ARCHITECTURE MATCHES "x86_64|amd64")
+    set(FRIDA_CORE_PLATFORM "macos-x86_64")
+  else()
+    message(FATAL_ERROR "Unsupported Frida core architecture: ${_FRIDA_CORE_ARCHITECTURE}")
+  endif()
+endif()
+
+if(FRIDA_CORE_DEVKIT_ROOT STREQUAL "")
+  if(NOT FRIDA_CORE_DOWNLOAD)
+    message(FATAL_ERROR "Set FRIDA_CORE_DEVKIT_ROOT or enable FRIDA_CORE_DOWNLOAD")
+  endif()
+
+  set(FRIDA_CORE_NEEDS_DOWNLOAD ON)
+  set(FRIDA_CORE_DOWNLOAD_DIR "${CMAKE_BINARY_DIR}/_deps/frida-core")
+  set(FRIDA_CORE_DOWNLOAD_SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/frida-core-download.cmake")
+  set(FRIDA_CORE_RELEASE_URL "https://github.com/frida/frida/releases/download/${FRIDA_CORE_VERSION}/frida-core-devkit-${FRIDA_CORE_VERSION}-${FRIDA_CORE_PLATFORM}.tar.xz")
+  set(FRIDA_CORE_DEVKIT_ROOT "${FRIDA_CORE_DOWNLOAD_DIR}")
+  set(FRIDA_CORE_ARCHIVE "${FRIDA_CORE_DOWNLOAD_DIR}/frida-core-devkit-${FRIDA_CORE_VERSION}-${FRIDA_CORE_PLATFORM}.tar.xz")
+else()
+  set(FRIDA_CORE_NEEDS_DOWNLOAD OFF)
+endif()
+
+set(FRIDA_CORE_LIBRARY "${FRIDA_CORE_DEVKIT_ROOT}/libfrida-core.a")
+if(EXISTS "${FRIDA_CORE_DEVKIT_ROOT}/libfrida-core.dylib")
+  set(FRIDA_CORE_LIBRARY "${FRIDA_CORE_DEVKIT_ROOT}/libfrida-core.dylib")
+endif()
+
 include(FetchContent)
 set(DOBBY_VERSION "latest" CACHE STRING "Dobby version to use")
 set(DOBBY_REPOSITORY "https://github.com/jmpews/Dobby" CACHE STRING "Dobby repository URL")
@@ -59,28 +103,117 @@ FetchContent_MakeAvailable(dobby)
 
 set(DOBBY_LIBRARY "${dobby_BINARY_DIR}/libdobby.a")
 
+if(FRIDA_CORE_NEEDS_DOWNLOAD)
+  configure_file(
+        FridaCore/download_frida_core.cmake.in
+        "${FRIDA_CORE_DOWNLOAD_SCRIPT}"
+        @ONLY
+    )
+
+  add_custom_command(
+        OUTPUT "${FRIDA_CORE_ARCHIVE}"
+        COMMAND "${CMAKE_COMMAND}"
+                -DFRIDA_CORE_RELEASE_URL=${FRIDA_CORE_RELEASE_URL}
+                -DFRIDA_CORE_ARCHIVE=${FRIDA_CORE_ARCHIVE}
+                -P "${FRIDA_CORE_DOWNLOAD_SCRIPT}"
+        DEPENDS "${FRIDA_CORE_DOWNLOAD_SCRIPT}"
+        VERBATIM
+    )
+
+  add_custom_command(
+        OUTPUT "${FRIDA_CORE_LIBRARY}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${FRIDA_CORE_DOWNLOAD_DIR}"
+        COMMAND "${CMAKE_COMMAND}" -E tar xJf "${FRIDA_CORE_ARCHIVE}"
+        WORKING_DIRECTORY "${FRIDA_CORE_DOWNLOAD_DIR}"
+        DEPENDS "${FRIDA_CORE_ARCHIVE}"
+        VERBATIM
+    )
+
+  add_custom_target(frida-core-devkit DEPENDS "${FRIDA_CORE_LIBRARY}")
+endif()
+
+add_library(FridaCoreDevkit UNKNOWN IMPORTED GLOBAL)
+set_target_properties(FridaCoreDevkit PROPERTIES
+    IMPORTED_LOCATION "${FRIDA_CORE_LIBRARY}"
+)
+
+if(TARGET frida-core-devkit)
+  add_dependencies(FridaCoreDevkit frida-core-devkit)
+endif()
+
 add_library(ApplicatorConfig STATIC
     Config/lua_config.c
 )
 
 target_include_directories(ApplicatorConfig PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/Config"
-    "${LUAJIT_INCLUDE_DIR}"
+    "${LUA_JIT_INCLUDE_DIR}"
 )
 
 target_link_libraries(ApplicatorConfig PUBLIC
     "${LUAJIT_LIBRARY}"
 )
 
+find_program(FRIDA_COMPILE_EXECUTABLE
+    NAMES frida-compile
+    HINTS /Library/Frameworks/Python.framework/Versions/3.10/bin
+)
+
+if(NOT FRIDA_COMPILE_EXECUTABLE)
+  message(FATAL_ERROR "frida-compile is required to bundle loader script")
+endif()
+
+set(LOADER_SCRIPT_ENTRY "${CMAKE_CURRENT_SOURCE_DIR}/Loader/loader.entry.js")
+set(LOADER_BUNDLED_SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/loader.bundle.js")
+
+add_custom_command(
+    OUTPUT "${LOADER_BUNDLED_SCRIPT}"
+    COMMAND "${FRIDA_COMPILE_EXECUTABLE}" "${LOADER_SCRIPT_ENTRY}" -o "${LOADER_BUNDLED_SCRIPT}"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/Loader"
+    DEPENDS
+        "${LOADER_SCRIPT_ENTRY}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Loader/agent/bootstrap.js"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Loader/agent/shared.js"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Loader/agent/state.js"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Loader/agent/loaders.js"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Loader/agent/input.js"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Loader/agent/render.js"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Loader/agent/windows.js"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Loader/agent/titlebar-patch.js"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Loader/vendor/frida-objc-bridge/index.js"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Loader/vendor/frida-objc-bridge/lib/api.js"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Loader/vendor/frida-objc-bridge/lib/fastpaths.js"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Loader/vendor/frida-objc-bridge/package.json"
+    VERBATIM
+)
+
+add_custom_target(LoaderScriptBundle DEPENDS "${LOADER_BUNDLED_SCRIPT}")
+
 add_executable(loader-macos
     Loader/load.c
     Loader/amfid_handler.m
     Loader/becomeheadless.m
+    Loader/redirect.m
 )
+
+add_dependencies(loader-macos LoaderScriptBundle)
 
 target_compile_options(loader-macos PRIVATE
     $<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>
     $<$<COMPILE_LANGUAGE:OBJC>:-fblocks>
+)
+
+target_link_options(loader-macos PRIVATE
+    "-Wl,-sectcreate,__TEXT,__loader_js,${LOADER_BUNDLED_SCRIPT}"
+)
+
+set_target_properties(loader-macos PROPERTIES
+    LINK_DEPENDS "${LOADER_BUNDLED_SCRIPT}"
+)
+
+target_include_directories(loader-macos PRIVATE
+    "${FRIDA_CORE_DEVKIT_ROOT}/include"
+    "${FRIDA_CORE_DEVKIT_ROOT}"
 )
 
 target_link_libraries(loader-macos PRIVATE
@@ -88,7 +221,15 @@ target_link_libraries(loader-macos PRIVATE
     "${FOUNDATION_FRAMEWORK}"
     "${APPKIT_FRAMEWORK}"
     "${CORESYMBOLICATION_FRAMEWORK}"
+    FridaCoreDevkit
+    "${RESOLV_LIBRARY}"
+    "${IOKIT_FRAMEWORK}"
+    "${SECURITY_FRAMEWORK}"
 )
+
+if(TARGET frida-core-devkit)
+  add_dependencies(loader-macos frida-core-devkit)
+endif()
 
 set_target_properties(loader-macos PROPERTIES OUTPUT_NAME "loader-macos")
 

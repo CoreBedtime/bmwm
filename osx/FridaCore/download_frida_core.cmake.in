@@ -1,0 +1,30 @@
+cmake_minimum_required(VERSION @CMAKE_VERSION@)
+
+if(NOT DEFINED FRIDA_CORE_RELEASE_URL OR NOT DEFINED FRIDA_CORE_ARCHIVE)
+    message(FATAL_ERROR "FRIDA_CORE_RELEASE_URL and FRIDA_CORE_ARCHIVE must be set")
+endif()
+
+get_filename_component(_frida_archive_dir "${FRIDA_CORE_ARCHIVE}" DIRECTORY)
+file(MAKE_DIRECTORY "${_frida_archive_dir}")
+
+set(_frida_tmp_archive "${FRIDA_CORE_ARCHIVE}.tmp")
+file(REMOVE "${_frida_tmp_archive}")
+
+message(STATUS "Downloading Frida core devkit from ${FRIDA_CORE_RELEASE_URL}")
+file(DOWNLOAD
+    "${FRIDA_CORE_RELEASE_URL}"
+    "${_frida_tmp_archive}"
+    SHOW_PROGRESS
+    STATUS _frida_download_status
+    TLS_VERIFY ON
+)
+
+list(GET _frida_download_status 0 _frida_download_code)
+list(GET _frida_download_status 1 _frida_download_message)
+
+if(NOT _frida_download_code EQUAL 0)
+    file(REMOVE "${_frida_tmp_archive}")
+    message(FATAL_ERROR "Failed to download Frida core devkit: ${_frida_download_message}")
+endif()
+
+file(RENAME "${_frida_tmp_archive}" "${FRIDA_CORE_ARCHIVE}")
