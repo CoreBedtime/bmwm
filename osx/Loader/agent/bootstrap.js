@@ -9,6 +9,8 @@ function setupReceiver() {
                 const isAppKit = parts[1] === '1';
                 console.log(`[Frida Agent] Focused Window ID: ${windowId}, AppKit Backed: ${isAppKit}`);
             }
+        } else {
+            console.log(`[Frida Agent] Unknown message type: ${message.type}`);
         }
         setupReceiver(); // Recursively set up next receiver
     });
@@ -16,3 +18,8 @@ function setupReceiver() {
 
 console.log("Frida Agent: Focus Monitor Active");
 setupReceiver();
+
+// Keep the event loop ticking and prove the script isn't dead
+setInterval(function() {
+    // console.log("[Frida Agent] ping"); 
+}, 5000);

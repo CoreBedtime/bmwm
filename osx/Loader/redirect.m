@@ -11,6 +11,7 @@
 #include <libproc.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/stat.h>
 
 static void on_message(FridaScript *script, const gchar *message, const gchar *data, gint data_size, gpointer user_data) {
     g_print("[frida] %s\n", message);
@@ -41,10 +42,19 @@ static void handle_focus_update(int sock) {
     ssize_t n = recv(sock, buffer, sizeof(buffer) - 1, 0);
     if (n > 0) {
         buffer[n] = '\0';
-        g_print("[loader] Received focus update: %s\n", buffer);
+        
+        // Remove any trailing newlines which would break JSON formatting
+        for (int i = 0; i < n; i++) {
+            if (buffer[i] == '\n' || buffer[i] == '\r') {
+                buffer[i] = '\0';
+                break;
+            }
+        }
+
+        g_print("[loader] Received focus update: '%s'\n", buffer);
         if (g_script != NULL) {
-            GError *error = NULL;
             char *json = g_strdup_printf("{\"type\": \"focus\", \"payload\": \"%s\"}", buffer);
+            g_print("[loader] Posting to Frida: %s\n", json);
             frida_script_post(g_script, json, NULL);
             g_free(json);
         } else {
@@ -56,7 +66,10 @@ static void handle_focus_update(int sock) {
 static gpointer loader_socket_thread(gpointer data) {
     unlink("/tmp/applicator_loader.sock");
     g_loader_sock = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (g_loader_sock < 0) return NULL;
+    if (g_loader_sock < 0) {
+        g_print("[loader] Failed to create socket: %s\n", strerror(errno));
+        return NULL;
+    }
 
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
@@ -64,16 +77,21 @@ static gpointer loader_socket_thread(gpointer data) {
     strncpy(addr.sun_path, "/tmp/applicator_loader.sock", sizeof(addr.sun_path) - 1);
 
     if (bind(g_loader_sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        g_print("[loader] Failed to bind socket: %s\n", strerror(errno));
         close(g_loader_sock);
         return NULL;
     }
+    chmod("/tmp/applicator_loader.sock", 0777);
     listen(g_loader_sock, 5);
+    g_print("[loader] Listening on /tmp/applicator_loader.sock\n");
 
     while (TRUE) {
         int client = accept(g_loader_sock, NULL, NULL);
         if (client >= 0) {
             handle_focus_update(client);
             close(client);
+        } else {
+            g_print("[loader] accept failed: %s\n", strerror(errno));
         }
     }
     return NULL;

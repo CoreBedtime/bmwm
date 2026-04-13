@@ -439,21 +439,24 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
     NSLog(@"[AppSrv] Broadcasting focus change: %@", message);
     [self broadcastToClients:message];
 
-        // Also notify redirect.m so it can push to Frida
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            int sock = socket(AF_UNIX, SOCK_STREAM, 0);
-            if (sock >= 0) {
-                struct sockaddr_un addr;
-                memset(&addr, 0, sizeof(addr));
-                addr.sun_family = AF_UNIX;
-                strncpy(addr.sun_path, "/tmp/applicator_loader.sock", sizeof(addr.sun_path) - 1);
+    // Also notify redirect.m so it can push to Frida (done synchronously to ensure it sends)
+    int sock = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (sock >= 0) {
+        struct sockaddr_un addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sun_family = AF_UNIX;
+        strncpy(addr.sun_path, "/tmp/applicator_loader.sock", sizeof(addr.sun_path) - 1);
 
-                if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
-                    send(sock, [message UTF8String], [message length], 0);
-                }
-                close(sock);
-            }
-        });
+        if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+            NSLog(@"[AppSrv] Successfully connected and sent to loader socket");
+            send(sock, [message UTF8String], [message length], 0);
+        } else {
+            NSLog(@"[AppSrv] Failed to connect to loader socket: %s", strerror(errno));
+        }
+        close(sock);
+    } else {
+        NSLog(@"[AppSrv] Failed to create socket for loader: %s", strerror(errno));
+    }
 }
 
 - (void)broadcastToClients:(NSString *)message {
