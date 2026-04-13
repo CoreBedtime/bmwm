@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <signal.h>
 #include <dlfcn.h>
+#include <sys/sysctl.h>
 #include <mach-o/getsect.h>
 #include <libproc.h>
 
@@ -53,26 +54,23 @@ static char *copy_embedded_script(void) {
 }
 
 static guint find_windowserver_pid(void) {
-    pid_t pids[2048];
-    int bytes = proc_listpids(PROC_ALL_PIDS, 0, pids, sizeof(pids));
-    if (bytes <= 0) return 0;
-
-    int count = bytes / sizeof(pid_t);
-    for (int i = 0; i < count; i++) {
-        char path[PROC_PIDPATHINFO_MAXSIZE];
-        if (proc_pidpath(pids[i], path, sizeof(path)) > 0) {
-            char *name = strrchr(path, '/');
-            if (name) {
-                name++;
-            } else {
-                name = path;
-            }
-            if (strcmp(name, "WindowServer") == 0) {
-                return (guint)pids[i];
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0};
+    size_t buf_size;
+    if (sysctl(mib, 4, NULL, &buf_size, NULL, 0) != 0) {
+        fprintf(stderr, "[respawn_headless] Failed to get proc list size: %s\n", strerror(errno));
+    } else {
+        struct kinfo_proc *procs = malloc(buf_size);
+        if (procs && sysctl(mib, 4, procs, &buf_size, NULL, 0) == 0) {
+            int num_procs = buf_size / sizeof(struct kinfo_proc);
+            for (int i = 0; i < num_procs; i++) {
+                if (strcmp(procs[i].kp_proc.p_comm, "WindowServer") == 0) {
+                    return (guint)procs[i].kp_proc.p_pid;
+                    break;
+                }
             }
         }
+        free(procs);
     }
-    return 0;
 }
 
 void run_windowserver_init(void) {
