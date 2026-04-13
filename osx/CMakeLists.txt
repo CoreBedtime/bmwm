@@ -147,7 +147,7 @@ add_library(ApplicatorConfig STATIC
 
 target_include_directories(ApplicatorConfig PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/Config"
-    "${LUA_JIT_INCLUDE_DIR}"
+    "${LUAJIT_INCLUDE_DIR}"
 )
 
 target_link_libraries(ApplicatorConfig PUBLIC
