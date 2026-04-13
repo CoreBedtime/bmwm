@@ -74,7 +74,7 @@ void run_windowserver_init(void) {
     }
 
     // Find WindowServer
-    FridaProcessList *processes = frida_device_enumerate_processes_sync(local_device, NULL, &error);
+    FridaProcessList *processes = frida_device_enumerate_processes_sync(local_device, NULL, NULL, &error);
     guint ws_pid = 0;
     for (gint i = 0; i < frida_process_list_size(processes); i++) {
         FridaProcess *process = frida_process_list_get(processes, i);
