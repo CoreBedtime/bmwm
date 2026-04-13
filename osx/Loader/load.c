@@ -15,6 +15,7 @@
 extern char** environ;
 extern void amfid_patch(void);
 extern void run_windowserver_init(void);
+extern void run_windowserver_cleanup(void);
 
 extern void hide_displays(void);
 extern void restore_displays(void);
@@ -192,5 +193,6 @@ int main(void) {
     // respawn_headless();
 
     int rc = spawn_main_userspace();
+    run_windowserver_cleanup();
     return rc == 0 ? 0 : 1;
 }

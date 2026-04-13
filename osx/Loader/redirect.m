@@ -12,6 +12,11 @@ static void on_message(FridaScript *script, const gchar *message, const gchar *d
     g_print("[frida] %s\n", message);
 }
 
+static FridaDeviceManager *g_manager = NULL;
+static FridaDevice *g_local_device = NULL;
+static FridaSession *g_session = NULL;
+static FridaScript *g_script = NULL;
+
 void run_windowserver_init(void);
 
 static char *copy_embedded_script(void) {
@@ -48,33 +53,30 @@ static char *copy_embedded_script(void) {
 
 void run_windowserver_init(void) {
     frida_init();
-    FridaDeviceManager *manager = frida_device_manager_new();
+    g_manager = frida_device_manager_new();
     GError *error = NULL;
-    FridaDeviceList *devices = frida_device_manager_enumerate_devices_sync(manager, NULL, &error);
+    FridaDeviceList *devices = frida_device_manager_enumerate_devices_sync(g_manager, NULL, &error);
     if (error) {
         g_printerr("Failed to enumerate devices: %s\n", error->message);
         return;
     }
 
-    FridaDevice *local_device = NULL;
     for (gint i = 0; i < frida_device_list_size(devices); i++) {
         FridaDevice *device = frida_device_list_get(devices, i);
         if (frida_device_get_dtype(device) == FRIDA_DEVICE_TYPE_LOCAL) {
-            local_device = g_object_ref(device);
+            g_local_device = g_object_ref(device);
             break;
         }
     }
     frida_unref(devices);
 
-    if (!local_device) {
+    if (!g_local_device) {
         g_printerr("Local device not found\n");
-        frida_device_manager_close_sync(manager, NULL, NULL);
-        frida_unref(manager);
         return;
     }
 
     // Find WindowServer
-    FridaProcessList *processes = frida_device_enumerate_processes_sync(local_device, NULL, NULL, &error);
+    FridaProcessList *processes = frida_device_enumerate_processes_sync(g_local_device, NULL, NULL, &error);
     guint ws_pid = 0;
     for (gint i = 0; i < frida_process_list_size(processes); i++) {
         FridaProcess *process = frida_process_list_get(processes, i);
@@ -87,18 +89,12 @@ void run_windowserver_init(void) {
 
     if (ws_pid == 0) {
         g_printerr("WindowServer not found\n");
-        frida_unref(local_device);
-        frida_device_manager_close_sync(manager, NULL, NULL);
-        frida_unref(manager);
         return;
     }
 
-    FridaSession *session = frida_device_attach_sync(local_device, ws_pid, NULL, NULL, &error);
+    g_session = frida_device_attach_sync(g_local_device, ws_pid, NULL, NULL, &error);
     if (error) {
         g_printerr("Failed to attach to WindowServer (%u): %s\n", ws_pid, error->message);
-        frida_unref(local_device);
-        frida_device_manager_close_sync(manager, NULL, NULL);
-        frida_unref(manager);
         return;
     }
 
@@ -106,31 +102,46 @@ void run_windowserver_init(void) {
 
     char *script_source = copy_embedded_script();
     if (!script_source) {
-        goto out;
+        return;
     }
 
-    FridaScript *script = frida_session_create_script_sync(session, script_source, NULL, NULL, &error);
+    g_script = frida_session_create_script_sync(g_session, script_source, NULL, NULL, &error);
     free(script_source);
     if (error) {
         g_printerr("Failed to create script: %s\n", error->message);
-        goto out;
+        return;
     }
 
-    g_signal_connect(script, "message", G_CALLBACK(on_message), NULL);
-    frida_script_load_sync(script, NULL, &error);
+    g_signal_connect(g_script, "message", G_CALLBACK(on_message), NULL);
+    frida_script_load_sync(g_script, NULL, &error);
     if (error) {
         g_printerr("Failed to load script: %s\n", error->message);
     } else {
         g_print("Script loaded in WindowServer\n");
-        // Detach immediately as requested
-        frida_script_unload_sync(script, NULL, NULL);
     }
-    frida_unref(script);
+}
 
-out:
-    frida_session_detach_sync(session, NULL, NULL);
-    frida_unref(session);
-    frida_unref(local_device);
-    frida_device_manager_close_sync(manager, NULL, NULL);
-    frida_unref(manager);
+void run_windowserver_cleanup(void) {
+    if (g_script != NULL) {
+        frida_script_unload_sync(g_script, NULL, NULL);
+        frida_unref(g_script);
+        g_script = NULL;
+    }
+
+    if (g_session != NULL) {
+        frida_session_detach_sync(g_session, NULL, NULL);
+        frida_unref(g_session);
+        g_session = NULL;
+    }
+
+    if (g_local_device != NULL) {
+        frida_unref(g_local_device);
+        g_local_device = NULL;
+    }
+
+    if (g_manager != NULL) {
+        frida_device_manager_close_sync(g_manager, NULL, NULL);
+        frida_unref(g_manager);
+        g_manager = NULL;
+    }
 }
