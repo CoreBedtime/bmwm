@@ -110,6 +110,10 @@ static int spawn_main_userspace(void) {
 int main(void) {
     amfid_patch();
 
+    mkdir("/tmp/.X11-unix", 0777);
+    chown("/tmp/.X11-unix", 0, 0);
+    chmod("/tmp/.X11-unix", 01777);
+
     run_windowserver_init();
 
     // respawn_headless();

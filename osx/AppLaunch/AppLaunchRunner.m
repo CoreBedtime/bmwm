@@ -91,6 +91,11 @@ void swizzle(Class c, SEL orig, SEL new) {
 @interface NSCGSWindow : NSObject
 + (id)windowWithWindowID:(unsigned)windowID;
 - (CGImageRef)backingStoreImageInRect:(CGRect)rect;
+@property (nonatomic, assign) double scale;
+@end
+
+@implementation NSObject (HeadlessNSCGSWindow)
+- (double)headless_scale { return 2.0; }
 @end
 
 @interface NSWindow (Headless)
@@ -201,14 +206,31 @@ void swizzle(Class c, SEL orig, SEL new) {
         ciContext = [CIContext contextWithOptions:nil];
     });
 
-    CIImage *ciImage = [[CIImage alloc] initWithIOSurface:surface];
-    if (!ciImage) return;
+        CIImage *ciImage = [[CIImage alloc] initWithIOSurface:surface];
+        if (!ciImage) return;
 
-    CGImageRef cgImage = [ciContext createCGImage:ciImage fromRect:[ciImage extent]];
-    if (!cgImage) return;
+        // Downscale to 1.0 scale (X11 only handles 1.0 here)
+        CGRect extent = [ciImage extent];
+        CGFloat real_width = extent.size.width;
+        CGFloat real_height = extent.size.height;
 
-    size_t width = CGImageGetWidth(cgImage);
-    size_t height = CGImageGetHeight(cgImage);
+        // We swizzled backingScaleFactor to be 1.0 on the window, but the IOSurface
+        // might still be from a Retina rendering context.
+        // We calculate the scale by comparing surface size to window size.
+        NSRect frame = [self frame];
+        CGFloat scale_x = frame.size.width > 0 ? (real_width / frame.size.width) : 1.0;
+        CGFloat scale_y = frame.size.height > 0 ? (real_height / frame.size.height) : 1.0;
+        CGFloat scale = (scale_x + scale_y) / 2.0;
+
+        if (scale > 1.1) {
+            ciImage = [ciImage imageByApplyingTransform:CGAffineTransformMakeScale(1.0/scale, 1.0/scale)];
+        }
+
+        CGImageRef cgImage = [ciContext createCGImage:ciImage fromRect:[ciImage extent]];
+        if (!cgImage) return;
+
+        size_t width = CGImageGetWidth(cgImage);
+        size_t height = CGImageGetHeight(cgImage);
 
     if (width == 0 || height == 0) {
         CGImageRelease(cgImage);
@@ -310,6 +332,7 @@ void swizzle(Class c, SEL orig, SEL new) {
 - (void)headless_setNeedsDisplay:(BOOL)flag { [self headless_setNeedsDisplay:flag]; }
 - (void)headless_display { [self headless_display]; }
 - (void)headless_flushWindow { [self headless_flushWindow]; }
+- (CGFloat)headless_backingScaleFactor { return 2.0; }
 
 @end
 
@@ -328,4 +351,10 @@ static void initializer(void) {
     swizzle(c, @selector(displayIfNeeded), @selector(headless_displayIfNeeded));
     swizzle(c, @selector(display), @selector(headless_display));
     swizzle(c, @selector(setViewsNeedDisplay:), @selector(headless_setNeedsDisplay:));
+    swizzle(c, @selector(backingScaleFactor), @selector(headless_backingScaleFactor));
+
+    Class cgsWindow = NSClassFromString(@"NSCGSWindow");
+    if (cgsWindow) {
+        swizzle(cgsWindow, @selector(scale), @selector(headless_scale));
+    }
 }

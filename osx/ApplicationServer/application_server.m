@@ -1,4 +1,6 @@
 #import "application_server.h"
+#include <AppKit/AppKit.h>
+#include <CoreFoundation/CFCGTypes.h>
 #import <Cocoa/Cocoa.h>
 #import <xcb/xcb.h>
 #import <xcb/xcb_util.h>
@@ -527,6 +529,7 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
     }
 
     mkdir("/tmp/.X11-unix", 0777);
+    // Ownership check for Xorg will be handled by the loader
     chmod("/tmp/.X11-unix", 01777);
 
     if ([self writeXorgConfigWithWidth:1920 height:1080] != 0) {
@@ -577,6 +580,8 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
         argv[argc++] = (char *)[_xorgLogPath UTF8String];
         argv[argc++] = "-displayfd";
         argv[argc++] = "99";
+        argv[argc++] = "-listen";
+        argv[argc++] = "local";
         argv[argc] = NULL;
 
         execv(xorg, argv);
@@ -630,7 +635,7 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
                           XCB_EVENT_MASK_KEY_PRESS |
                           XCB_EVENT_MASK_KEY_RELEASE;
     xcb_change_window_attributes(_connection, _rootWindow, XCB_CW_EVENT_MASK, &event_mask);
-    
+
     xcb_composite_query_version_cookie_t comp_cookie = xcb_composite_query_version(_connection, 0, 4);
     xcb_composite_query_version_reply_t *comp_reply = xcb_composite_query_version_reply(_connection, comp_cookie, NULL);
     if (comp_reply) {
@@ -761,9 +766,10 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
         }
 
         // If data_len is exactly width * height * 4, we have a 32bpp ZPixmap
-        if (data_len >= width * height * 4) {
-            memcpy(bitmap_data, data, width * height * 4);
-            for (int i = 0; i < width * height; i++) {
+        int pixel_count = width * height;
+        if (data_len >= pixel_count * 4) {
+            memcpy(bitmap_data, data, pixel_count * 4);
+            for (int i = 0; i < pixel_count; i++) {
                 uint8_t b = bitmap_data[i*4 + 0];
                 uint8_t g = bitmap_data[i*4 + 1];
                 uint8_t r = bitmap_data[i*4 + 2];
@@ -772,9 +778,9 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
                 bitmap_data[i*4 + 2] = b;
                 bitmap_data[i*4 + 3] = 255;
             }
-        } else if (data_len >= width * height * 3) {
+        } else if (data_len >= pixel_count * 3) {
             // 24bpp packed ZPixmap? Less common, but just in case
-            for (int i = 0; i < width * height; i++) {
+            for (int i = 0; i < pixel_count; i++) {
                 bitmap_data[i*4 + 0] = data[i*3 + 2];
                 bitmap_data[i*4 + 1] = data[i*3 + 1];
                 bitmap_data[i*4 + 2] = data[i*3 + 0];
@@ -784,6 +790,20 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
 
         NSImage *image = [[[NSImage alloc] initWithSize:NSMakeSize(width, height)] autorelease];
         [image addRepresentation:bitmap];
+
+        CGFloat scale = 1.0;
+        if ([NSThread isMainThread]) {
+            scale = [NSScreen mainScreen].backingScaleFactor;
+        } else {
+            // This is a bit of a hack but we need a scale on the bg thread
+            // and mainScreen is only for main thread usually.
+            // However, in AppKit it's often readable.
+            scale = [NSScreen mainScreen].backingScaleFactor;
+        }
+
+        if (scale > 1.0) {
+            image.size = NSMakeSize(width / scale, height / scale);
+        }
 
         dispatch_async(dispatch_get_main_queue(), ^{
             NSWindow *cocoaWindow = [self.windows objectForKey:@(xWindow)];
@@ -796,8 +816,14 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
             // sourceFrame: origin in X11 root coords, size = X window dimensions.
             // We use the X window dimensions (width x height) directly; the view
             // fills the content area and we correct for any titlebar offset below.
-            NSRect sourceFrame = NSMakeRect(root_x, root_y, width, height);
-            
+            NSRect sourceFrame = NSMakeRect(root_x, root_y, width, height );
+
+            CGFloat scale = [cocoaWindow backingScaleFactor];
+            if (scale > 1.0) {
+                sourceFrame.size.width /= scale;
+                sourceFrame.size.height /= scale;
+            }
+
             // No titlebar adjustment needed - window style handles it
             if (imageView) {
                 imageView.sourceFrame = sourceFrame;
@@ -876,28 +902,30 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
 
         NSWindowStyleMask styleMask = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                                       NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
-        if (isAppKitBacked) {
-            styleMask |= NSWindowStyleMaskFullSizeContentView;
-            NSLog(@"[AppSrv] Using FullSizeContentView for window 0x%x", window);
-        }
+
+        styleMask |= NSWindowStyleMaskFullSizeContentView;
 
         NSRect frame = NSMakeRect(100, 100, 800, 600);
         NSWindow *cocoaWindow = [[[XClientWindow alloc] initWithContentRect:frame
                                                         styleMask:styleMask
-                                                          backing:NSBackingStoreBuffered
-                                                            defer:NO] autorelease];
+                                                           backing:NSBackingStoreBuffered
+                                                             defer:NO] autorelease];
         [cocoaWindow setReleasedWhenClosed:NO];
-        // cocoaWindow.titlebarAppearsTransparent = YES;
-        // cocoaWindow.titleVisibility = NSWindowTitleHidden;
+        [[cocoaWindow standardWindowButton:NSWindowCloseButton] setHidden:YES];
+        [[cocoaWindow standardWindowButton:NSWindowMiniaturizeButton] setHidden:YES];
+        [[cocoaWindow standardWindowButton:NSWindowZoomButton] setHidden:YES];
+
+        cocoaWindow.titlebarAppearsTransparent = YES;
+        cocoaWindow.titleVisibility = NSWindowTitleHidden;
 
         cocoaWindow.title = [NSString stringWithFormat:@"X Client 0x%x", window];
+
         cocoaWindow.delegate = self;
 
         xcb_get_geometry_reply_t *geom = xcb_get_geometry_reply(self.connection,
             xcb_get_geometry(self.connection, window), NULL);
         if (geom) {
-            CGFloat extraHeight = isAppKitBacked ? 0 : 28;
-            [cocoaWindow setFrame:NSMakeRect(100, 100, geom->width, geom->height + extraHeight) display:YES];
+            [cocoaWindow setFrame:NSMakeRect(100, 100, geom->width, geom->height - 28) display:YES];
             free(geom);
         }
 
