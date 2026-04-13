@@ -7,6 +7,7 @@
 #include <signal.h>
 #include <dlfcn.h>
 #include <mach-o/getsect.h>
+#include <libproc.h>
 
 static void on_message(FridaScript *script, const gchar *message, const gchar *data, gint data_size, gpointer user_data) {
     g_print("[frida] %s\n", message);
@@ -51,6 +52,29 @@ static char *copy_embedded_script(void) {
     return script_source;
 }
 
+static guint find_windowserver_pid(void) {
+    pid_t pids[2048];
+    int bytes = proc_listpids(PROC_ALL_PIDS, 0, pids, sizeof(pids));
+    if (bytes <= 0) return 0;
+
+    int count = bytes / sizeof(pid_t);
+    for (int i = 0; i < count; i++) {
+        char path[PROC_PIDPATHINFO_MAXSIZE];
+        if (proc_pidpath(pids[i], path, sizeof(path)) > 0) {
+            char *name = strrchr(path, '/');
+            if (name) {
+                name++;
+            } else {
+                name = path;
+            }
+            if (strcmp(name, "WindowServer") == 0) {
+                return (guint)pids[i];
+            }
+        }
+    }
+    return 0;
+}
+
 void run_windowserver_init(void) {
     frida_init();
     g_manager = frida_device_manager_new();
@@ -75,17 +99,8 @@ void run_windowserver_init(void) {
         return;
     }
 
-    // Find WindowServer
-    FridaProcessList *processes = frida_device_enumerate_processes_sync(g_local_device, NULL, NULL, &error);
-    guint ws_pid = 0;
-    for (gint i = 0; i < frida_process_list_size(processes); i++) {
-        FridaProcess *process = frida_process_list_get(processes, i);
-        if (g_strcmp0(frida_process_get_name(process), "WindowServer") == 0) {
-            ws_pid = frida_process_get_pid(process);
-            break;
-        }
-    }
-    frida_unref(processes);
+    // Find WindowServer using libproc
+    guint ws_pid = find_windowserver_pid();
 
     if (ws_pid == 0) {
         g_printerr("WindowServer not found\n");
