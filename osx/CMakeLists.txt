@@ -173,13 +173,6 @@ add_custom_command(
     DEPENDS
         "${LOADER_SCRIPT_ENTRY}"
         "${CMAKE_CURRENT_SOURCE_DIR}/Loader/agent/bootstrap.js"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Loader/agent/shared.js"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Loader/agent/state.js"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Loader/agent/loaders.js"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Loader/agent/input.js"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Loader/agent/render.js"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Loader/agent/windows.js"
-        "${CMAKE_CURRENT_SOURCE_DIR}/Loader/agent/titlebar-patch.js"
         "${CMAKE_CURRENT_SOURCE_DIR}/Loader/vendor/frida-objc-bridge/index.js"
         "${CMAKE_CURRENT_SOURCE_DIR}/Loader/vendor/frida-objc-bridge/lib/api.js"
         "${CMAKE_CURRENT_SOURCE_DIR}/Loader/vendor/frida-objc-bridge/lib/fastpaths.js"
@@ -192,7 +185,6 @@ add_custom_target(LoaderScriptBundle DEPENDS "${LOADER_BUNDLED_SCRIPT}")
 add_executable(loader-macos
     Loader/load.c
     Loader/amfid_handler.m
-    Loader/becomeheadless.m
     Loader/redirect.m
 )
 
