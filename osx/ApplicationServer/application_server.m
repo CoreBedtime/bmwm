@@ -15,6 +15,10 @@
 #include <sys/select.h>
 #include <errno.h>
 #include <time.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+
+static const char *SOCKET_PATH = "/tmp/applicator_focus.sock";
 
 static const char *xorg_paths[] = {
     "/opt/local/bin/Xorg",
@@ -161,6 +165,7 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
 @property (nonatomic, assign) NSString *xorgConfigPath;
 @property (nonatomic, assign) NSString *xorgLogPath;
 @property (nonatomic, assign) NSTimer *refreshTimer;
+@property (nonatomic, assign) int server_fd;
 @end
 
 @interface XClientView : NSImageView
@@ -246,11 +251,11 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
     int root_x = (int)self.sourceFrame.origin.x + local_x;
     int root_y = (int)self.sourceFrame.origin.y + local_y;
 
-    NSLog(@"[AppSrv] updateX11Pointer: loc=(%.1f,%.1f) bounds=%.0fx%.0f srcFrame=(%.0f,%.0f %.0fx%.0f) norm=(%.3f,%.3f) local=(%d,%d) root=(%d,%d)",
-          loc.x, loc.y, boundsWidth, boundsHeight,
-          self.sourceFrame.origin.x, self.sourceFrame.origin.y,
-          self.sourceFrame.size.width, self.sourceFrame.size.height,
-          normalizedX, normalizedY, local_x, local_y, root_x, root_y);
+    // NSLog(@"[AppSrv] updateX11Pointer: loc=(%.1f,%.1f) bounds=%.0fx%.0f srcFrame=(%.0f,%.0f %.0fx%.0f) norm=(%.3f,%.3f) local=(%d,%d) root=(%d,%d)",
+    //       loc.x, loc.y, boundsWidth, boundsHeight,
+    //       self.sourceFrame.origin.x, self.sourceFrame.origin.y,
+    //       self.sourceFrame.size.width, self.sourceFrame.size.height,
+    //       normalizedX, normalizedY, local_x, local_y, root_x, root_y);
 
     xcb_screen_t *screen = xcb_setup_roots_iterator(xcb_get_setup(self.connection)).data;
     xcb_window_t rootWindow = self.rootWindow != 0 ? self.rootWindow : screen->root;
@@ -383,8 +388,90 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
         _imageViews = [[NSMutableDictionary alloc] init];
         _running = NO;
         _xorg_pid = -1;
+        _server_fd = -1;
     }
     return self;
+}
+
+- (void)broadcastFocusChange:(xcb_window_t)xWindow isAppKitBacked:(BOOL)isAppKitBacked {
+    if (self.server_fd < 0) return;
+
+    NSString *message = [NSString stringWithFormat:@"%u %d\n", xWindow, isAppKitBacked];
+    const char *msg = [message UTF8String];
+    size_t len = strlen(msg);
+
+    // We just try to send to anyone connected, but since we don't have a list of clients
+    // and this is a simple local socket, we could accept and send immediately or just
+    // have a single persistent connection if we were more complex.
+    // Given the prompt "listen over socket", I'll implement a simple broadcast to all connected clients.
+}
+
+- (void)setupFocusSocket {
+    unlink(SOCKET_PATH);
+    self.server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (self.server_fd < 0) return;
+
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
+
+    if (bind(self.server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(self.server_fd);
+        self.server_fd = -1;
+        return;
+    }
+
+    if (listen(self.server_fd, 5) < 0) {
+        close(self.server_fd);
+        self.server_fd = -1;
+        return;
+    }
+
+    int flags = fcntl(self.server_fd, F_GETFL, 0);
+    fcntl(self.server_fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+- (void)updateFocusClientsWithWindow:(xcb_window_t)xWindow isAppKitBacked:(BOOL)isAppKitBacked {
+    if (self.server_fd < 0) return;
+
+    NSString *message = [NSString stringWithFormat:@"%u %d\n", xWindow, isAppKitBacked ? 1 : 0];
+    NSLog(@"[AppSrv] Broadcasting focus change: %@", message);
+    [self broadcastToClients:message];
+
+        // Also notify redirect.m so it can push to Frida
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            int sock = socket(AF_UNIX, SOCK_STREAM, 0);
+            if (sock >= 0) {
+                struct sockaddr_un addr;
+                memset(&addr, 0, sizeof(addr));
+                addr.sun_family = AF_UNIX;
+                strncpy(addr.sun_path, "/tmp/applicator_loader.sock", sizeof(addr.sun_path) - 1);
+
+                if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+                    send(sock, [message UTF8String], [message length], 0);
+                }
+                close(sock);
+            }
+        });
+}
+
+- (void)broadcastToClients:(NSString *)message {
+    int client_fd;
+    while ((client_fd = accept(self.server_fd, NULL, NULL)) >= 0) {
+        send(client_fd, [message UTF8String], [message length], 0);
+        close(client_fd);
+    }
+}
+
+- (void)handleIncomingSocketData {
+    int client_fd;
+    while ((client_fd = accept(self.server_fd, NULL, NULL)) >= 0) {
+        // Just drain for now, as focus is pushed from this server to loader
+        char buffer[1024];
+        recv(client_fd, buffer, sizeof(buffer), 0);
+        close(client_fd);
+    }
 }
 
 - (void)closeCocoaWindowForXWindow:(xcb_window_t)xWindow {
@@ -649,6 +736,7 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
 }
 
 - (BOOL)start {
+    [self setupFocusSocket];
     if ([self spawnXorg] != 0) {
         return NO;
     }
@@ -663,6 +751,7 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
     dispatch_async(dispatch_get_main_queue(), ^{
         self.refreshTimer = [NSTimer scheduledTimerWithTimeInterval:1.0/60.0 repeats:YES block:^(NSTimer * _Nonnull timer) {
             [blockSelf retain];
+            [blockSelf handleIncomingSocketData];
             for (NSNumber *windowId in [blockSelf windows]) {
                 [blockSelf captureAndDisplayWindow:(xcb_window_t)[windowId unsignedIntValue]];
             }
@@ -923,6 +1012,7 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
         [cocoaWindow makeKeyAndOrderFront:nil];
 
         [self captureAndDisplayWindow:window];
+        [self updateFocusClientsWithWindow:window isAppKitBacked:isAppKitBacked];
 
         xcb_configure_window(_connection, window, XCB_CONFIG_WINDOW_BORDER_WIDTH, (uint32_t[]){0});
         xcb_map_window(_connection, window);
@@ -956,6 +1046,10 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
     });
 }
 
+- (void)windowDidResignKey:(NSNotification *)notification {
+    NSLog(@"[AppSrv] Window resigned key: %@", notification.object);
+}
+
 - (void)handleExpose:(xcb_expose_event_t *)event {
     dispatch_async(dispatch_get_main_queue(), ^{
         NSWindow *window = self.windows[@(event->window)];
@@ -976,6 +1070,10 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
     }
     if (foundKey) {
         xcb_window_t xWindow = (xcb_window_t)[foundKey unsignedIntValue];
+        XClientView *view = (XClientView *)self.imageViews[foundKey];
+        BOOL isAppKitBacked = view ? [view isAppKitBacked] : NO;
+        [self updateFocusClientsWithWindow:xWindow isAppKitBacked:isAppKitBacked];
+
         NSView *firstResponder = self.imageViews[foundKey];
         if (firstResponder != nil) {
             [cocoaWindow makeFirstResponder:firstResponder];
@@ -1017,6 +1115,12 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
     if (_connection) {
         xcb_disconnect(_connection);
         _connection = NULL;
+    }
+
+    if (_server_fd >= 0) {
+        close(_server_fd);
+        _server_fd = -1;
+        unlink(SOCKET_PATH);
     }
 
     if (_xorg_pid > 0) {

@@ -9,15 +9,75 @@
 #include <sys/sysctl.h>
 #include <mach-o/getsect.h>
 #include <libproc.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 
 static void on_message(FridaScript *script, const gchar *message, const gchar *data, gint data_size, gpointer user_data) {
     g_print("[frida] %s\n", message);
+
+    // Communicate with ApplicationServer over the focus socket
+    int sock = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (sock < 0) return;
+
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, "/tmp/applicator_focus.sock", sizeof(addr.sun_path) - 1);
+
+    if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+        send(sock, message, strlen(message), 0);
+    }
+    close(sock);
 }
 
 static FridaDeviceManager *g_manager = NULL;
 static FridaDevice *g_local_device = NULL;
 static FridaSession *g_session = NULL;
 static FridaScript *g_script = NULL;
+static int g_loader_sock = -1;
+
+static void handle_focus_update(int sock) {
+    char buffer[1024];
+    ssize_t n = recv(sock, buffer, sizeof(buffer) - 1, 0);
+    if (n > 0) {
+        buffer[n] = '\0';
+        g_print("[loader] Received focus update: %s\n", buffer);
+        if (g_script != NULL) {
+            GError *error = NULL;
+            char *json = g_strdup_printf("{\"type\": \"focus\", \"payload\": \"%s\"}", buffer);
+            frida_script_post(g_script, json, NULL);
+            g_free(json);
+        } else {
+            g_print("[loader] Script not ready yet\n");
+        }
+    }
+}
+
+static gpointer loader_socket_thread(gpointer data) {
+    unlink("/tmp/applicator_loader.sock");
+    g_loader_sock = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (g_loader_sock < 0) return NULL;
+
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, "/tmp/applicator_loader.sock", sizeof(addr.sun_path) - 1);
+
+    if (bind(g_loader_sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(g_loader_sock);
+        return NULL;
+    }
+    listen(g_loader_sock, 5);
+
+    while (TRUE) {
+        int client = accept(g_loader_sock, NULL, NULL);
+        if (client >= 0) {
+            handle_focus_update(client);
+            close(client);
+        }
+    }
+    return NULL;
+}
 
 void run_windowserver_init(void);
 
@@ -71,6 +131,7 @@ static guint find_windowserver_pid(void) {
         }
         free(procs);
     }
+    return 0;
 }
 
 void run_windowserver_init(void) {
@@ -131,6 +192,7 @@ void run_windowserver_init(void) {
         g_printerr("Failed to load script: %s\n", error->message);
     } else {
         g_print("Script loaded in WindowServer\n");
+        g_thread_new("loader-socket", loader_socket_thread, NULL);
     }
 }
 
