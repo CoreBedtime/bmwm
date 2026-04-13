@@ -813,18 +813,8 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
             }
 
             XClientView *imageView = (XClientView *)self.imageViews[@(xWindow)];
-            // sourceFrame: origin in X11 root coords, size = X window dimensions.
-            // We use the X window dimensions (width x height) directly; the view
-            // fills the content area and we correct for any titlebar offset below.
             NSRect sourceFrame = NSMakeRect(root_x, root_y, width, height );
 
-            CGFloat scale = [cocoaWindow backingScaleFactor];
-            if (scale > 1.0) {
-                sourceFrame.size.width /= scale;
-                sourceFrame.size.height /= scale;
-            }
-
-            // No titlebar adjustment needed - window style handles it
             if (imageView) {
                 imageView.sourceFrame = sourceFrame;
                 imageView.image = image;
