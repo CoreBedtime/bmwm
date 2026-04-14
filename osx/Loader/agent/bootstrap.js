@@ -45,23 +45,29 @@ const sym = ResolvePrivateSignedSymbol("SkyLight", "CPXPostEvent");
 // ev
 // SLSEventRecord (size: 0x100)
 //
-// 0x00  uint16_t var0
-// 0x02  uint16_t var1
-// 0x04  uint32_t var2
-// 0x08  uint32_t var3
+// 0x00  uint16_t var0         (event type)
+// 0x02  uint16_t var1         (subtype)
+// 0x04  uint32_t var2         (flags)
+// 0x08  uint32_t var3         (raw connection port — NOT window ID)
 // 0x0C  padding (4)
 //
-// 0x10  CGPoint var4
-// 0x20  CGPoint var5
+// 0x10  CGPoint var4          (screen position)
+// 0x20  CGPoint var5          (window-local position)
 //
 // 0x30  uint64_t var6
-// 0x38  uint32_t var7
-// 0x3C  uint32_t var8
+// 0x38  uint32_t var7         (notifyCode)
+// 0x3C  uint32_t var8         (window ID — set by caller before CPXPostEvent)
 // 0x40  uint32_t var9
 // 0x44  padding (4)
 //
 // 0x48  __CGEventSourceData var10 (0x28)
-// 0x70  _CGEventProcess     var11 (0x14)
+//
+// 0x70  _CGEventProcess var11 (0x14)
+//   0x70  int          var11.var0   (connection ID — populated by CGXPostEventByConnection, zero on entry)
+//   0x74  uint32_t     var11.var1
+//   0x78  uint32_t     var11.var2
+//   0x7C  uint32_t     var11.var3   (window ID — populated by doPostBackgroundEvent, zero on entry)
+//   0x80  uint32_t     var11.var4
 // 0x84  padding (4)
 //
 // 0x88  unknown             var12 (0x50)
@@ -94,20 +100,25 @@ if (!sym) {
         const type = ev.readU16();
         const subtype = ev.add(0x02).readU16();
         const flags = ev.add(0x04).readU32();
-        const windowId = ev.add(0x08).readU32();
 
-        // CGPoint at 0x10 (screen click pos)
+        // var8 @ 0x3C = window ID (set by caller, e.g. PostCGSEventToProcess writes a4 here)
+        const windowId = ev.add(0x3c).readU32();
+
+        // _CGEventProcess.var0 @ 0x70 = connection ID (zero on entry, populated downstream)
+        const connectionId = ev.add(0x70).readS32();
+
+        // CGPoint at 0x10 (screen position)
         const x1 = ev.add(0x10).readDouble();
         const y1 = ev.add(0x18).readDouble();
 
-        // CGPoint at 0x20 (window click pos)
+        // CGPoint at 0x20 (window-local position)
         const x2 = ev.add(0x20).readDouble();
         const y2 = ev.add(0x28).readDouble();
 
         console.log(
           `[CPXPostEvent] type=${type} subtype=${subtype} flags=0x${flags.toString(
             16,
-          )} windowId=${windowId} p1=(${x1}, ${y1}) p2=(${x2}, ${y2})`,
+          )} connectionId=${connectionId} windowId=${windowId} p1=(${x1}, ${y1}) p2=(${x2}, ${y2})`,
         );
       } catch (e) {
         console.log("read fail:", e);
