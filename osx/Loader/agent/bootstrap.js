@@ -1,18 +1,20 @@
+let lastFocusedWindowId = 0;
+let lastFocusedWindowRealId = 0;
+let lastFocusedIsAppKit = false;
+
 function setupReceiver() {
   recv(function (message) {
-    console.log(`[Frida Agent] Received message: ${JSON.stringify(message)}`);
     if (message.type === "focus") {
       const payload = message.payload.trim();
       const parts = payload.split(" ");
-      if (parts.length >= 2) {
-        const windowId = parts[0];
-        const isAppKit = parts[1] === "1";
+      if (parts.length >= 3) {
+        lastFocusedWindowId = parseInt(parts[0]);
+        lastFocusedWindowRealId = parseInt(parts[1]);
+        lastFocusedIsAppKit = parts[2] === "1";
         console.log(
-          `[Frida Agent] Focused Window ID: ${windowId}, AppKit Backed: ${isAppKit}`,
+          `[Frida Agent] Tracking Focus -> Target: ${lastFocusedWindowId}, Source(Proxy): ${lastFocusedWindowRealId}, AppKit: ${lastFocusedIsAppKit}`,
         );
       }
-    } else {
-      console.log(`[Frida Agent] Unknown message type: ${message.type}`);
     }
     setupReceiver(); // Recursively set up next receiver
   });
@@ -48,7 +50,7 @@ const sym = ResolvePrivateSignedSymbol("SkyLight", "CPXPostEvent");
 // 0x00  uint16_t var0         (event type)
 // 0x02  uint16_t var1         (subtype)
 // 0x04  uint32_t var2         (flags)
-// 0x08  uint32_t var3         (raw connection port — NOT window ID)
+// 0x08  uint32_t var3         (ANOTHER window ID ??)
 // 0x0C  padding (4)
 //
 // 0x10  CGPoint var4          (screen position)
@@ -57,7 +59,7 @@ const sym = ResolvePrivateSignedSymbol("SkyLight", "CPXPostEvent");
 // 0x30  uint64_t var6
 // 0x38  uint32_t var7         (notifyCode)
 // 0x3C  uint32_t var8         (window ID — set by caller before CPXPostEvent)
-// 0x40  uint32_t var9
+// 0x40  uint32_t var9         (slsmainconnectionid - easy)
 // 0x44  padding (4)
 //
 // 0x48  __CGEventSourceData var10 (0x28)
@@ -87,6 +89,54 @@ const sym = ResolvePrivateSignedSymbol("SkyLight", "CPXPostEvent");
 // 0xF8  __CFData *var19
 //
 // 0x100 end
+//
+//
+// typedef struct _CGSEventRecord {
+// 	CGSEventRecordVersion major; /*0x0*/
+// 	CGSEventRecordVersion minor; /*0x2*/
+// 	CGSByteCount length;         /*0x4*/ /* Length of complete event record */
+// 	CGSEventType type;           /*0x8*/ /* An event type from above */
+// 	CGPoint location;            /*0x10*/ /* Base coordinates (global), from upper-left */
+// 	CGPoint windowLocation;      /*0x20*/ /* Coordinates relative to window */
+// 	CGSEventRecordTime time;     /*0x30*/ /* nanoseconds since startup */
+// 	CGSEventFlag flags;         /* key state flags */
+// 	CGWindowID window;         /* window number of assigned window */
+// 	CGSConnectionID connection; /* connection the event came from */
+// 	struct __CGEventSourceData {
+// 		int source;
+// 		unsigned int sourceUID;
+// 		unsigned int sourceGID;
+// 		unsigned int flags;
+// 		unsigned long long userData;
+// 		unsigned int sourceState;
+// 		unsigned short localEventSuppressionInterval;
+// 		unsigned char suppressionIntervalFlags;
+// 		unsigned char remoteMouseDragFlags;
+// 		unsigned long long serviceID;
+// 	} eventSource;
+// 	struct _CGEventProcess {
+// 		int pid;
+// 		unsigned int psnHi;
+// 		unsigned int psnLo;
+// 		unsigned int targetID;
+// 		unsigned int flags;
+// 	} eventProcess;
+// 	NXEventData eventData;
+// 	SInt32 _padding[4];
+// 	void *ioEventData;
+// 	unsigned short _field16;
+// 	unsigned short _field17;
+// 	struct _CGSEventAppendix {
+// 		unsigned short windowHeight;
+// 		unsigned short mainDisplayHeight;
+// 		unsigned short *unicodePayload;
+// 		unsigned int eventOwner;
+// 		unsigned char passedThrough;
+// 	} *appendix;
+// 	unsigned int _field18;
+// 	bool passedThrough;
+// 	CFDataRef data;
+// } CGSEventRecord;
 
 if (!sym) {
   console.error("CPXPostEvent not found");
@@ -95,34 +145,6 @@ if (!sym) {
     onEnter(args) {
       const ev = args[1];
       if (ev.isNull()) return;
-
-      try {
-        const type = ev.readU16();
-        const subtype = ev.add(0x02).readU16();
-        const flags = ev.add(0x04).readU32();
-
-        // var8 @ 0x3C = window ID (set by caller, e.g. PostCGSEventToProcess writes a4 here)
-        const windowId = ev.add(0x3c).readU32();
-
-        // _CGEventProcess.var0 @ 0x70 = connection ID (zero on entry, populated downstream)
-        const connectionId = ev.add(0x70).readS32();
-
-        // CGPoint at 0x10 (screen position)
-        const x1 = ev.add(0x10).readDouble();
-        const y1 = ev.add(0x18).readDouble();
-
-        // CGPoint at 0x20 (window-local position)
-        const x2 = ev.add(0x20).readDouble();
-        const y2 = ev.add(0x28).readDouble();
-
-        console.log(
-          `[CPXPostEvent] type=${type} subtype=${subtype} flags=0x${flags.toString(
-            16,
-          )} connectionId=${connectionId} windowId=${windowId} p1=(${x1}, ${y1}) p2=(${x2}, ${y2})`,
-        );
-      } catch (e) {
-        console.log("read fail:", e);
-      }
     },
   });
 }

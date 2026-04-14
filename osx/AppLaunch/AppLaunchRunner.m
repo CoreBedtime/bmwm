@@ -168,6 +168,14 @@ void swizzle(Class c, SEL orig, SEL new) {
             free(reply);
         }
 
+        xcb_intern_atom_cookie_t native_cookie = xcb_intern_atom(conn, 0, 21, "_APP_LAUNCH_NATIVE_ID");
+        xcb_intern_atom_reply_t *native_reply = xcb_intern_atom_reply(conn, native_cookie, NULL);
+        if (native_reply) {
+            uint32_t wid_val = wid;
+            xcb_change_property(conn, XCB_PROP_MODE_REPLACE, win, native_reply->atom, XCB_ATOM_INTEGER, 32, 1, &wid_val);
+            free(native_reply);
+        }
+
         if (wid > 0) {
             NSDictionary *dsprops = @{
                 @"AllowNonIntersectingWindows" : @(YES),

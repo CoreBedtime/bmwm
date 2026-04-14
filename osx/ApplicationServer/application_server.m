@@ -218,9 +218,34 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
     if (propReply == NULL) {
         return NO;
     }
-    BOOL exists = (propReply->format == 8 && xcb_get_property_value_length(propReply) > 0);
+    BOOL exists = (propReply->format == 32 && xcb_get_property_value_length(propReply) >= 4);
     free(propReply);
     return exists;
+}
+
+- (uint32_t)getNativeWindowID {
+    if (self.connection == NULL || self.xWindow == 0) {
+        return 0;
+    }
+    xcb_intern_atom_cookie_t cookie = xcb_intern_atom(self.connection, 1, 21, "_APP_LAUNCH_NATIVE_ID");
+    xcb_intern_atom_reply_t *reply = xcb_intern_atom_reply(self.connection, cookie, NULL);
+    if (reply == NULL) {
+        return 0;
+    }
+    xcb_atom_t propAtom = reply->atom;
+    free(reply);
+
+    xcb_get_property_cookie_t propCookie = xcb_get_property(self.connection, 0, self.xWindow, propAtom, XCB_ATOM_ANY, 0, 1);
+    xcb_get_property_reply_t *propReply = xcb_get_property_reply(self.connection, propCookie, NULL);
+    if (propReply == NULL) {
+        return 0;
+    }
+    uint32_t nativeId = 0;
+    if (propReply->format == 32 && xcb_get_property_value_length(propReply) >= 4) {
+        nativeId = *(uint32_t *)xcb_get_property_value(propReply);
+    }
+    free(propReply);
+    return nativeId;
 }
 
 - (BOOL)acceptsFirstMouse:(NSEvent *)event {
@@ -432,10 +457,10 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
     fcntl(self.server_fd, F_SETFL, flags | O_NONBLOCK);
 }
 
-- (void)updateFocusClientsWithWindow:(xcb_window_t)xWindow isAppKitBacked:(BOOL)isAppKitBacked {
+- (void)updateFocusClientsWithWindow:(xcb_window_t)xWindow nativeWindowId:(uint32_t)nativeWindowId isAppKitBacked:(BOOL)isAppKitBacked {
     if (self.server_fd < 0) return;
 
-    NSString *message = [NSString stringWithFormat:@"%u %d\n", xWindow, isAppKitBacked ? 1 : 0];
+    NSString *message = [NSString stringWithFormat:@"%u %u %d\n", nativeWindowId, xWindow, isAppKitBacked ? 1 : 0];
     NSLog(@"[AppSrv] Broadcasting focus change: %@", message);
     [self broadcastToClients:message];
 
@@ -968,19 +993,42 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
         }
 
         BOOL isAppKitBacked = NO;
-        xcb_intern_atom_cookie_t atom_cookie = xcb_intern_atom(_connection, 1, 18, "_APP_LAUNCH_APPKIT");
-        xcb_intern_atom_reply_t *atom_reply = xcb_intern_atom_reply(_connection, atom_cookie, NULL);
-        if (atom_reply) {
-            xcb_get_property_cookie_t prop_cookie = xcb_get_property(_connection, 0, window, atom_reply->atom, XCB_ATOM_ANY, 0, 1);
-            xcb_get_property_reply_t *prop_reply = xcb_get_property_reply(_connection, prop_cookie, NULL);
-            BOOL hasProp = (prop_reply && prop_reply->format == 32 && xcb_get_property_value_length(prop_reply) > 0);
-            NSLog(@"[AppSrv] Window 0x%x isAppKitBacked=%d prop_reply=%p format=%d len=%d", window, hasProp, prop_reply, prop_reply ? prop_reply->format : 0, prop_reply ? (int)xcb_get_property_value_length(prop_reply) : 0);
-            if (hasProp) {
-                isAppKitBacked = YES;
+        uint32_t nativeWindowId = 0;
+        int wait_count = 0;
+        // Wait up to 500ms (100 * 5ms) for properties
+        // This handles AppKit apps becoming ready while allowing X-only apps to show
+        while (wait_count < 100) {
+            xcb_intern_atom_cookie_t native_atom_cookie = xcb_intern_atom(_connection, 1, 21, "_APP_LAUNCH_NATIVE_ID");
+            xcb_intern_atom_reply_t *native_atom_reply = xcb_intern_atom_reply(_connection, native_atom_cookie, NULL);
+            if (native_atom_reply) {
+                xcb_get_property_cookie_t native_prop_cookie = xcb_get_property(_connection, 0, window, native_atom_reply->atom, XCB_ATOM_ANY, 0, 1);
+                xcb_get_property_reply_t *native_prop_reply = xcb_get_property_reply(_connection, native_prop_cookie, NULL);
+                if (native_prop_reply && native_prop_reply->format == 32 && xcb_get_property_value_length(native_prop_reply) >= 4) {
+                    nativeWindowId = *(uint32_t *)xcb_get_property_value(native_prop_reply);
+                }
+                if (native_prop_reply) free(native_prop_reply);
+                free(native_atom_reply);
             }
-            free(prop_reply);
+
+            xcb_intern_atom_cookie_t atom_cookie = xcb_intern_atom(_connection, 1, 18, "_APP_LAUNCH_APPKIT");
+            xcb_intern_atom_reply_t *atom_reply = xcb_intern_atom_reply(_connection, atom_cookie, NULL);
+            if (atom_reply) {
+                xcb_get_property_cookie_t prop_cookie = xcb_get_property(_connection, 0, window, atom_reply->atom, XCB_ATOM_ANY, 0, 1);
+                xcb_get_property_reply_t *prop_reply = xcb_get_property_reply(_connection, prop_cookie, NULL);
+                if (prop_reply && prop_reply->format == 32 && xcb_get_property_value_length(prop_reply) > 0) {
+                    isAppKitBacked = YES;
+                }
+                if (prop_reply) free(prop_reply);
+                free(atom_reply);
+            }
+
+            if (nativeWindowId != 0 || isAppKitBacked) {
+                break;
+            }
+            
+            usleep(5000); // 5ms
+            wait_count++;
         }
-        free(atom_reply);
 
         NSWindowStyleMask styleMask = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                                       NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
@@ -989,9 +1037,9 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
 
         NSRect frame = NSMakeRect(100, 100, 800, 600);
         NSWindow *cocoaWindow = [[[XClientWindow alloc] initWithContentRect:frame
-                                                        styleMask:styleMask
-                                                           backing:NSBackingStoreBuffered
-                                                             defer:NO] autorelease];
+                                                         styleMask:styleMask
+                                                            backing:NSBackingStoreBuffered
+                                                              defer:NO] autorelease];
         [cocoaWindow setReleasedWhenClosed:NO];
         [[cocoaWindow standardWindowButton:NSWindowCloseButton] setHidden:YES];
         [[cocoaWindow standardWindowButton:NSWindowMiniaturizeButton] setHidden:YES];
@@ -1015,7 +1063,7 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
         [cocoaWindow makeKeyAndOrderFront:nil];
 
         [self captureAndDisplayWindow:window];
-        [self updateFocusClientsWithWindow:window isAppKitBacked:isAppKitBacked];
+        [self updateFocusClientsWithWindow:window nativeWindowId:nativeWindowId isAppKitBacked:isAppKitBacked];
 
         xcb_configure_window(_connection, window, XCB_CONFIG_WINDOW_BORDER_WIDTH, (uint32_t[]){0});
         xcb_map_window(_connection, window);
@@ -1075,7 +1123,8 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
         xcb_window_t xWindow = (xcb_window_t)[foundKey unsignedIntValue];
         XClientView *view = (XClientView *)self.imageViews[foundKey];
         BOOL isAppKitBacked = view ? [view isAppKitBacked] : NO;
-        [self updateFocusClientsWithWindow:xWindow isAppKitBacked:isAppKitBacked];
+        uint32_t nativeWindowId = view ? [view getNativeWindowID] : 0;
+        [self updateFocusClientsWithWindow:xWindow nativeWindowId:nativeWindowId isAppKitBacked:isAppKitBacked];
 
         NSView *firstResponder = self.imageViews[foundKey];
         if (firstResponder != nil) {
