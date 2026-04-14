@@ -145,6 +145,18 @@ if (!sym) {
     onEnter(args) {
       const ev = args[1];
       if (ev.isNull()) return;
+      const x = ev.add(0x10).readDouble();
+      const y = ev.add(0x18).readDouble();
+      const wx = ev.add(0x20).readDouble();
+      const wy = ev.add(0x28).readDouble();
+
+      // kinda dirty and i dont understand what it really does? seems to have no effect
+      // ev.add(0x10).writeDouble(x + 32);
+      // ev.add(0x18).writeDouble(y + 32);
+
+      // love this this is the click in the window
+      // ev.add(0x20).writeDouble(wx + 32);
+      // ev.add(0x28).writeDouble(wy + 32);
     },
   });
 }
