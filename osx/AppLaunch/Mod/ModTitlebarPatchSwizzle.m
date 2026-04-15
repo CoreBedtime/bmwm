@@ -1,6 +1,7 @@
 #import "ModTitlebarPatch.h"
 #import <objc/runtime.h>
 
+#define NSLog(...)
 void ModTitlebarPatchSwizzle(Class cls, SEL orig, SEL swiz) {
     Method origMethod = class_getInstanceMethod(cls, orig);
     Method swizMethod = class_getInstanceMethod(cls, swiz);

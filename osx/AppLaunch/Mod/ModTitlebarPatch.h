@@ -2,7 +2,6 @@
 #define ModTitlebarPatch_h
 
 #import <Cocoa/Cocoa.h>
-
 static NSString *const titlebarContainerViewKey = @"titlebarContainerViewKey";
 static NSString *const originalParentKey = @"originalParentKey";
 

@@ -1,5 +1,6 @@
 #import "ModTitlebarPatch.h"
 
+#define NSLog(...)
 @implementation NSView (ModTitlebarPatch)
 
 - (void)modTitlebarPatch_layout {

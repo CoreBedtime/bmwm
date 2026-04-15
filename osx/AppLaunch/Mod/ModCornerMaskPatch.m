@@ -1,6 +1,7 @@
 #import "ModCornerMaskPatch.h"
 #include <CoreFoundation/CFCGTypes.h>
 #import <objc/runtime.h>
+#define NSLog(...)
 
 @interface NSCGSWindowCornerRadiusMask : NSObject
 - (double)cornerRadius;

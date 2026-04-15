@@ -1,6 +1,7 @@
 #import "ModTitlebarPatch.h"
 #import <objc/runtime.h>
 
+#define NSLog(...)
 @implementation NSWindow (ModTitlebarPatch)
 
 - (void)modTitlebarPatch_makeKeyAndOrderFront:(id)sender {
