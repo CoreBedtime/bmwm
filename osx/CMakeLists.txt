@@ -227,34 +227,6 @@ set_target_properties(loader-macos PROPERTIES OUTPUT_NAME "loader-macos")
 
 find_library(SKYLIGHT_LIBRARY SkyLight HINTS "/System/Library/PrivateFrameworks" REQUIRED)
 
-add_executable(SLXServer
-    Headless/slx_server_wrapper.c
-)
-
-target_include_directories(SLXServer PRIVATE
-    "${dobby_SOURCE_DIR}/include"
-)
-
-target_link_libraries(SLXServer PRIVATE
-    "${SKYLIGHT_LIBRARY}"
-    dobby_static
-    "-lc++"
-)
-
-set_target_properties(SLXServer PROPERTIES
-    OUTPUT_NAME "SLXServer"
-    LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/OSEntitlements.plist"
-)
-
-add_custom_command(TARGET SLXServer POST_BUILD
-    COMMAND "${CODESIGN_EXECUTABLE}"
-            --force
-            --sign -
-            --entitlements "${CMAKE_SOURCE_DIR}/osx/OSEntitlements.plist"
-            "$<TARGET_FILE:SLXServer>"
-    VERBATIM
-)
-
 find_library(XCB_XTEST_LIBRARY xcb-xtest HINTS /opt/local/lib REQUIRED)
 find_library(XCB_RENDER_LIBRARY xcb-render HINTS /opt/local/lib REQUIRED)
 find_library(XCB_XFIXES_LIBRARY xcb-xfixes HINTS /opt/local/lib REQUIRED)
