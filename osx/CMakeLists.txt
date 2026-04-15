@@ -263,6 +263,8 @@ find_library(XCURSOR_LIBRARY Xcursor HINTS /opt/local/lib REQUIRED)
 
 add_executable(ApplicationServer
     ApplicationServer/application_server.m
+    ApplicationServer/XClientView.m
+    ApplicationServer/XClientWindow.m
 )
 
 target_compile_options(ApplicationServer PRIVATE
@@ -294,25 +296,8 @@ add_library(AppLaunchRunner SHARED
     AppLaunch/AppLaunchRunner.m
 )
 
-target_compile_options(AppLaunchRunner PRIVATE
-    $<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>
-)
-
-target_include_directories(AppLaunchRunner PRIVATE
-    "${XCB_INCLUDE_DIR}"
-)
-
 target_link_libraries(AppLaunchRunner PRIVATE
-    "${XCB_LIBRARY}"
-    "${X11_LIBRARY}"
-    "${XCB_COMPOSITE_LIBRARY}"
-    "${RESOLV_LIBRARY}"
     "${FOUNDATION_FRAMEWORK}"
-    "${IOKIT_FRAMEWORK}"
-    "${SECURITY_FRAMEWORK}"
-    "${APPKIT_FRAMEWORK}"
-    "${SKYLIGHT_LIBRARY}"
-    "-framework CoreImage"
 )
 
 set_target_properties(AppLaunchRunner PROPERTIES OUTPUT_NAME "AppLaunchRunner")

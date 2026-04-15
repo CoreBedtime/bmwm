@@ -18,6 +18,10 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
+#import "XClientWindow.h"
+#import "XClientView.h"
+#import "KeycodeMapping.h"
+
 extern int SLSMainConnectionID(void);
 
 static const char *SOCKET_PATH = "/tmp/applicator_focus.sock";
@@ -27,133 +31,6 @@ static const char *xorg_paths[] = {
     "/opt/X11/bin/Xorg",
     NULL
 };
-
-static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
-    switch (keyCode) {
-        case 0: return 38;
-        case 1: return 39;
-        case 2: return 40;
-        case 3: return 41;
-        case 4: return 43;
-        case 5: return 42;
-        case 6: return 52;
-        case 7: return 53;
-        case 8: return 54;
-        case 9: return 55;
-        case 10: return 94;
-        case 11: return 56;
-        case 12: return 24;
-        case 13: return 25;
-        case 14: return 26;
-        case 15: return 27;
-        case 16: return 29;
-        case 17: return 28;
-        case 18: return 10;
-        case 19: return 11;
-        case 20: return 12;
-        case 21: return 13;
-        case 22: return 15;
-        case 23: return 14;
-        case 24: return 21;
-        case 25: return 18;
-        case 26: return 16;
-        case 27: return 20;
-        case 28: return 17;
-        case 29: return 19;
-        case 30: return 35;
-        case 31: return 32;
-        case 32: return 30;
-        case 33: return 34;
-        case 34: return 31;
-        case 35: return 33;
-        case 36: return 36;
-        case 37: return 46;
-        case 38: return 44;
-        case 39: return 48;
-        case 40: return 45;
-        case 41: return 47;
-        case 42: return 51;
-        case 43: return 59;
-        case 44: return 61;
-        case 45: return 57;
-        case 46: return 58;
-        case 47: return 60;
-        case 48: return 23;
-        case 49: return 65;
-        case 50: return 49;
-        case 51: return 22;
-        case 54: return 116;
-        case 55: return 115;
-        case 56: return 50;
-        case 57: return 66;
-        case 58: return 64;
-        case 59: return 37;
-        case 60: return 62;
-        case 61: return 113;
-        case 62: return 109;
-        case 63: return 117;
-        case 64: return 122;
-        case 65: return 91;
-        case 67: return 63;
-        case 69: return 86;
-        case 71: return 77;
-        case 72: return 143;
-        case 73: return 142;
-        case 74: return 141;
-        case 75: return 112;
-        case 76: return 108;
-        case 78: return 82;
-        case 79: return 129;
-        case 80: return 130;
-        case 81: return 157;
-        case 82: return 90;
-        case 83: return 87;
-        case 84: return 88;
-        case 85: return 89;
-        case 86: return 83;
-        case 87: return 84;
-        case 88: return 85;
-        case 89: return 79;
-        case 91: return 80;
-        case 92: return 81;
-        case 95: return 123;
-        case 96: return 71;
-        case 97: return 72;
-        case 98: return 73;
-        case 99: return 69;
-        case 100: return 74;
-        case 101: return 75;
-        case 103: return 95;
-        case 105: return 182;
-        case 106: return 121;
-        case 107: return 183;
-        case 109: return 76;
-        case 111: return 96;
-        case 113: return 184;
-        case 114: return 106;
-        case 115: return 97;
-        case 116: return 99;
-        case 117: return 107;
-        case 118: return 70;
-        case 119: return 103;
-        case 120: return 68;
-        case 121: return 105;
-        case 122: return 67;
-        case 123: return 100;
-        case 124: return 102;
-        case 125: return 104;
-        case 126: return 98;
-        default: return 0;
-    }
-}
-
-@interface XClientWindow : NSWindow
-@end
-
-@implementation XClientWindow
-- (BOOL)canBecomeKeyWindow { return YES; }
-- (BOOL)canBecomeMainWindow { return YES; }
-@end
 
 @interface ApplicationServer () <NSWindowDelegate, NSApplicationDelegate>
 @property (nonatomic, assign) xcb_connection_t *connection;
@@ -168,226 +45,6 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
 @property (nonatomic, assign) NSString *xorgLogPath;
 @property (nonatomic, assign) NSTimer *refreshTimer;
 @property (nonatomic, assign) int server_fd;
-@end
-
-@interface XClientView : NSImageView
-@property (nonatomic, assign) xcb_window_t xWindow;
-@property (nonatomic, assign) xcb_connection_t *connection;
-@property (nonatomic, assign) xcb_window_t rootWindow;
-@property (nonatomic, assign) NSRect sourceFrame;
-@property (nonatomic, assign) NSEventModifierFlags modifierFlagsState;
-- (BOOL)isAppKitBacked;
-- (int)getCID;
-@end
-
-@implementation XClientView
-
-- (BOOL)acceptsFirstResponder { return YES; }
-
-- (void)focusOwningWindow {
-    NSWindow *window = self.window;
-    if (window == nil) {
-        return;
-    }
-
-    NSApplication *app = [NSApplication sharedApplication];
-    [app activateIgnoringOtherApps:YES];
-    [window makeKeyAndOrderFront:nil];
-    [window makeMainWindow];
-    [window makeFirstResponder:self];
-
-    if (self.connection != NULL && self.xWindow != 0) {
-        uint32_t stackMode = XCB_STACK_MODE_ABOVE;
-        xcb_set_input_focus(self.connection, XCB_INPUT_FOCUS_POINTER_ROOT, self.xWindow, XCB_CURRENT_TIME);
-        xcb_configure_window(self.connection, self.xWindow, XCB_CONFIG_WINDOW_STACK_MODE, &stackMode);
-        xcb_flush(self.connection);
-    }
-}
-
-- (int)getCID {
-    if (self.connection == NULL || self.xWindow == 0) {
-        return 0;
-    }
-    xcb_intern_atom_cookie_t cookie = xcb_intern_atom(self.connection, 0, 15, "_APP_LAUNCH_CID");
-    xcb_intern_atom_reply_t *reply = xcb_intern_atom_reply(self.connection, cookie, NULL);
-    if (reply == NULL) {
-        NSLog(@"[getCID] atom reply NULL");
-        return 0;
-    }
-    xcb_atom_t propAtom = reply->atom;
-    free(reply);
-
-    xcb_get_property_cookie_t propCookie = xcb_get_property(self.connection, 0, self.xWindow, propAtom, XCB_ATOM_ANY, 0, 1);
-    xcb_get_property_reply_t *propReply = xcb_get_property_reply(self.connection, propCookie, NULL);
-    if (propReply == NULL) {
-        NSLog(@"[getCID] prop reply NULL");
-        return 0;
-    }
-    int cid = 0;
-    if (propReply->format == 32 && xcb_get_property_value_length(propReply) >= 4) {
-        cid = *(int *)xcb_get_property_value(propReply);
-    } else {
-        NSLog(@"[getCID] format=%d, len=%d", propReply->format, xcb_get_property_value_length(propReply));
-    }
-    free(propReply);
-    NSLog(@"[getCID] returning %d", cid);
-    return cid;
-}
-
-- (BOOL)acceptsFirstMouse:(NSEvent *)event {
-    (void)event;
-    [self focusOwningWindow];
-    return YES;
-}
-
-- (NSPoint)updateX11Pointer:(NSEvent *)event {
-    NSPoint loc = [self convertPoint:[event locationInWindow] fromView:nil];
-    CGFloat boundsWidth = self.bounds.size.width;
-    CGFloat boundsHeight = self.bounds.size.height;
-
-    if (boundsWidth <= 0 || boundsHeight <= 0 || self.sourceFrame.size.width <= 0 || self.sourceFrame.size.height <= 0) {
-        return NSZeroPoint;
-    }
-
-    CGFloat normalizedX = loc.x / boundsWidth;
-    CGFloat normalizedY = (boundsHeight - loc.y) / boundsHeight;
-    if (normalizedX < 0.0) normalizedX = 0.0;
-    if (normalizedX > 1.0) normalizedX = 1.0;
-    if (normalizedY < 0.0) normalizedY = 0.0;
-    if (normalizedY > 1.0) normalizedY = 1.0;
-
-    int local_x = (int)(normalizedX * MAX(0.0, self.sourceFrame.size.width - 1) + 0.5);
-    int local_y = (int)(normalizedY * MAX(0.0, self.sourceFrame.size.height - 1) + 0.5);
-
-    int root_x = (int)self.sourceFrame.origin.x + local_x;
-    int root_y = (int)self.sourceFrame.origin.y + local_y;
-
-    // NSLog(@"[AppSrv] updateX11Pointer: loc=(%.1f,%.1f) bounds=%.0fx%.0f srcFrame=(%.0f,%.0f %.0fx%.0f) norm=(%.3f,%.3f) local=(%d,%d) root=(%d,%d)",
-    //       loc.x, loc.y, boundsWidth, boundsHeight,
-    //       self.sourceFrame.origin.x, self.sourceFrame.origin.y,
-    //       self.sourceFrame.size.width, self.sourceFrame.size.height,
-    //       normalizedX, normalizedY, local_x, local_y, root_x, root_y);
-
-    xcb_screen_t *screen = xcb_setup_roots_iterator(xcb_get_setup(self.connection)).data;
-    xcb_window_t rootWindow = self.rootWindow != 0 ? self.rootWindow : screen->root;
-    xcb_test_fake_input(self.connection, XCB_MOTION_NOTIFY, 0, XCB_CURRENT_TIME, rootWindow, root_x, root_y, 0);
-    xcb_flush(self.connection);
-    return NSMakePoint(root_x, root_y);
-}
-
-- (void)sendX11KeyForMacKeyCode:(unsigned short)keyCode pressed:(BOOL)pressed {
-    uint8_t x11_keycode = mac_keycode_to_x11_keycode(keyCode);
-    if (x11_keycode == 0) {
-        return;
-    }
-
-    xcb_test_fake_input(self.connection,
-                        pressed ? XCB_KEY_PRESS : XCB_KEY_RELEASE,
-                        x11_keycode,
-                        XCB_CURRENT_TIME,
-                        self.rootWindow,
-                        0, 0, 0);
-    xcb_flush(self.connection);
-}
-
-- (NSEventModifierFlags)modifierMaskForKeyCode:(unsigned short)keyCode {
-    switch (keyCode) {
-        case 54:
-        case 55:
-            return NSEventModifierFlagCommand;
-        case 56:
-        case 60:
-            return NSEventModifierFlagShift;
-        case 57:
-            return NSEventModifierFlagCapsLock;
-        case 58:
-        case 61:
-            return NSEventModifierFlagOption;
-        case 59:
-        case 62:
-            return NSEventModifierFlagControl;
-        default:
-            return 0;
-    }
-}
-
-- (void)mouseDown:(NSEvent *)event {
-    [self focusOwningWindow];
-    NSPoint rootPoint = [self updateX11Pointer:event];
-    xcb_test_fake_input(self.connection, XCB_BUTTON_PRESS, 1, XCB_CURRENT_TIME, self.rootWindow, (int16_t)rootPoint.x, (int16_t)rootPoint.y, 0);
-    xcb_flush(self.connection);
-}
-
-- (void)mouseUp:(NSEvent *)event {
-    NSPoint rootPoint = [self updateX11Pointer:event];
-    xcb_test_fake_input(self.connection, XCB_BUTTON_RELEASE, 1, XCB_CURRENT_TIME, self.rootWindow, (int16_t)rootPoint.x, (int16_t)rootPoint.y, 0);
-    xcb_flush(self.connection);
-}
-
-- (void)rightMouseDown:(NSEvent *)event {
-    [self focusOwningWindow];
-    NSPoint rootPoint = [self updateX11Pointer:event];
-    xcb_test_fake_input(self.connection, XCB_BUTTON_PRESS, 3, XCB_CURRENT_TIME, self.rootWindow, (int16_t)rootPoint.x, (int16_t)rootPoint.y, 0);
-    xcb_flush(self.connection);
-}
-
-- (void)rightMouseUp:(NSEvent *)event {
-    [self focusOwningWindow];
-    NSPoint rootPoint = [self updateX11Pointer:event];
-    xcb_test_fake_input(self.connection, XCB_BUTTON_RELEASE, 3, XCB_CURRENT_TIME, self.rootWindow, (int16_t)rootPoint.x, (int16_t)rootPoint.y, 0);
-    xcb_flush(self.connection);
-}
-
-- (void)mouseMoved:(NSEvent *)event {
-    [self updateX11Pointer:event];
-}
-
-- (void)mouseDragged:(NSEvent *)event {
-    [self updateX11Pointer:event];
-}
-
-- (void)scrollWheel:(NSEvent *)event {
-    [self focusOwningWindow];
-    NSPoint rootPoint = [self updateX11Pointer:event];
-    int button = event.scrollingDeltaY > 0 ? 4 : (event.scrollingDeltaY < 0 ? 5 : 0);
-    if (button != 0) {
-        xcb_test_fake_input(self.connection, XCB_BUTTON_PRESS, button, XCB_CURRENT_TIME, self.rootWindow, (int16_t)rootPoint.x, (int16_t)rootPoint.y, 0);
-        xcb_test_fake_input(self.connection, XCB_BUTTON_RELEASE, button, XCB_CURRENT_TIME, self.rootWindow, (int16_t)rootPoint.x, (int16_t)rootPoint.y, 0);
-        xcb_flush(self.connection);
-    }
-}
-
-- (void)keyDown:(NSEvent *)event {
-    [self sendX11KeyForMacKeyCode:event.keyCode pressed:YES];
-}
-
-- (void)keyUp:(NSEvent *)event {
-    [self sendX11KeyForMacKeyCode:event.keyCode pressed:NO];
-}
-
-- (void)flagsChanged:(NSEvent *)event {
-    NSEventModifierFlags trackedFlags = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
-    NSEventModifierFlags modifierMask = [self modifierMaskForKeyCode:event.keyCode];
-    if (modifierMask == 0) {
-        self.modifierFlagsState = trackedFlags;
-        return;
-    }
-
-    if (modifierMask == NSEventModifierFlagCapsLock) {
-        BOOL oldCaps = (self.modifierFlagsState & NSEventModifierFlagCapsLock) != 0;
-        BOOL newCaps = (trackedFlags & NSEventModifierFlagCapsLock) != 0;
-        if (oldCaps != newCaps) {
-            [self sendX11KeyForMacKeyCode:event.keyCode pressed:YES];
-            [self sendX11KeyForMacKeyCode:event.keyCode pressed:NO];
-        }
-    } else {
-        BOOL pressed = (trackedFlags & modifierMask) != 0;
-        [self sendX11KeyForMacKeyCode:event.keyCode pressed:pressed];
-    }
-
-    self.modifierFlagsState = trackedFlags;
-}
-
 @end
 
 @implementation ApplicationServer
@@ -408,13 +65,6 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
     if (self.server_fd < 0) return;
 
     NSString *message = [NSString stringWithFormat:@"%u %d\n", xWindow, isAppKitBacked];
-    const char *msg = [message UTF8String];
-    size_t len = strlen(msg);
-
-    // We just try to send to anyone connected, but since we don't have a list of clients
-    // and this is a simple local socket, we could accept and send immediately or just
-    // have a single persistent connection if we were more complex.
-    // Given the prompt "listen over socket", I'll implement a simple broadcast to all connected clients.
 }
 
 - (void)setupFocusSocket {
@@ -451,7 +101,6 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
     NSLog(@"[AppSrv] Broadcasting focus change: %@", message);
     [self broadcastToClients:message];
 
-    // Also notify redirect.m so it can push to Frida (done synchronously to ensure it sends)
     int sock = socket(AF_UNIX, SOCK_STREAM, 0);
     if (sock >= 0) {
         struct sockaddr_un addr;
@@ -482,7 +131,6 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
 - (void)handleIncomingSocketData {
     int client_fd;
     while ((client_fd = accept(self.server_fd, NULL, NULL)) >= 0) {
-        // Just drain for now, as focus is pushed from this server to loader
         char buffer[1024];
         recv(client_fd, buffer, sizeof(buffer), 0);
         close(client_fd);
@@ -631,7 +279,6 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
     }
 
     mkdir("/tmp/.X11-unix", 0777);
-    // Ownership check for Xorg will be handled by the loader
     chmod("/tmp/.X11-unix", 01777);
 
     if ([self writeXorgConfigWithWidth:1920 height:1080] != 0) {
@@ -767,8 +414,42 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
         self.refreshTimer = [NSTimer scheduledTimerWithTimeInterval:1.0/60.0 repeats:YES block:^(NSTimer * _Nonnull timer) {
             [blockSelf retain];
             [blockSelf handleIncomingSocketData];
+            NSMutableArray *toRemove = [NSMutableArray array];
             for (NSNumber *windowId in [blockSelf windows]) {
-                [blockSelf captureAndDisplayWindow:(xcb_window_t)[windowId unsignedIntValue]];
+                xcb_window_t xWin = (xcb_window_t)[windowId unsignedIntValue];
+                
+                // 1. Check if window still exists and is mapped
+                xcb_get_window_attributes_cookie_t attr_cookie = xcb_get_window_attributes([blockSelf connection], xWin);
+                xcb_get_window_attributes_reply_t *attr = xcb_get_window_attributes_reply([blockSelf connection], attr_cookie, NULL);
+                if (!attr || attr->map_state == XCB_MAP_STATE_UNMAPPED) {
+                    [toRemove addObject:windowId];
+                    if (attr) free(attr);
+                    continue;
+                }
+                free(attr);
+
+                // 2. Check if owner PID still exists (if available)
+                xcb_intern_atom_cookie_t pid_atom_cookie = xcb_intern_atom([blockSelf connection], 0, 11, "_NET_WM_PID");
+                xcb_intern_atom_reply_t *pid_atom_reply = xcb_intern_atom_reply([blockSelf connection], pid_atom_cookie, NULL);
+                if (pid_atom_reply) {
+                    xcb_get_property_cookie_t prop_cookie = xcb_get_property([blockSelf connection], 0, xWin, pid_atom_reply->atom, XCB_ATOM_CARDINAL, 0, 1);
+                    xcb_get_property_reply_t *prop_reply = xcb_get_property_reply([blockSelf connection], prop_cookie, NULL);
+                    if (prop_reply && prop_reply->format == 32 && xcb_get_property_value_length(prop_reply) >= 4) {
+                        pid_t owner_pid = *(pid_t *)xcb_get_property_value(prop_reply);
+                        if (kill(owner_pid, 0) == -1 && errno == ESRCH) {
+                            [toRemove addObject:windowId];
+                        }
+                    }
+                    if (prop_reply) free(prop_reply);
+                    free(pid_atom_reply);
+                }
+
+                if (![toRemove containsObject:windowId]) {
+                    [blockSelf captureAndDisplayWindow:xWin];
+                }
+            }
+            for (NSNumber *windowId in toRemove) {
+                [blockSelf closeCocoaWindowForXWindow:(xcb_window_t)[windowId unsignedIntValue]];
             }
             [blockSelf release];
         }];
@@ -857,11 +538,11 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
                         pixelsHigh:height
                      bitsPerSample:8
                    samplesPerPixel:4
-                          hasAlpha:YES
-                          isPlanar:NO
-                    colorSpaceName:NSCalibratedRGBColorSpace
-                       bytesPerRow:width * 4
-                      bitsPerPixel:32] autorelease];
+                           hasAlpha:YES
+                           isPlanar:NO
+                     colorSpaceName:NSCalibratedRGBColorSpace
+                        bytesPerRow:width * 4
+                       bitsPerPixel:32] autorelease];
 
         uint8_t *bitmap_data = [bitmap bitmapData];
         if (!bitmap_data) {
@@ -869,7 +550,6 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
             return;
         }
 
-        // If data_len is exactly width * height * 4, we have a 32bpp ZPixmap
         int pixel_count = width * height;
         if (data_len >= pixel_count * 4) {
             memcpy(bitmap_data, data, pixel_count * 4);
@@ -883,7 +563,6 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
                 bitmap_data[i*4 + 3] = 255;
             }
         } else if (data_len >= pixel_count * 3) {
-            // 24bpp packed ZPixmap? Less common, but just in case
             for (int i = 0; i < pixel_count; i++) {
                 bitmap_data[i*4 + 0] = data[i*3 + 2];
                 bitmap_data[i*4 + 1] = data[i*3 + 1];
@@ -895,16 +574,7 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
         NSImage *image = [[[NSImage alloc] initWithSize:NSMakeSize(width, height)] autorelease];
         [image addRepresentation:bitmap];
 
-        CGFloat scale = 1.0;
-        if ([NSThread isMainThread]) {
-            scale = [NSScreen mainScreen].backingScaleFactor;
-        } else {
-            // This is a bit of a hack but we need a scale on the bg thread
-            // and mainScreen is only for main thread usually.
-            // However, in AppKit it's often readable.
-            scale = [NSScreen mainScreen].backingScaleFactor;
-        }
-
+        CGFloat scale = [NSScreen mainScreen].backingScaleFactor;
         if (scale > 1.0) {
             image.size = NSMakeSize(width / scale, height / scale);
         }
@@ -932,11 +602,10 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
                 newView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
                 newView.image = image;
 
-                // Add tracking area for mouse movement
                 NSTrackingArea *trackingArea = [[[NSTrackingArea alloc] initWithRect:newView.bounds
                                                                             options:NSTrackingMouseMoved | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect
-                                                                              owner:newView
-                                                                         userInfo:nil] autorelease];
+                                                                               owner:newView
+                                                                          userInfo:nil] autorelease];
                 [newView addTrackingArea:trackingArea];
 
                 [cocoaWindow.contentView addSubview:newView];
@@ -999,9 +668,9 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
 
         NSRect frame = NSMakeRect(100, 100, 800, 600);
         NSWindow *cocoaWindow = [[[XClientWindow alloc] initWithContentRect:frame
-                                                         styleMask:styleMask
-                                                            backing:NSBackingStoreBuffered
-                                                              defer:NO] autorelease];
+                                                          styleMask:styleMask
+                                                             backing:NSBackingStoreBuffered
+                                                               defer:NO] autorelease];
         [cocoaWindow setReleasedWhenClosed:NO];
         [[cocoaWindow standardWindowButton:NSWindowCloseButton] setHidden:YES];
         [[cocoaWindow standardWindowButton:NSWindowMiniaturizeButton] setHidden:YES];
@@ -1009,9 +678,7 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
 
         cocoaWindow.titlebarAppearsTransparent = YES;
         cocoaWindow.titleVisibility = NSWindowTitleHidden;
-
         cocoaWindow.title = [NSString stringWithFormat:@"X Client 0x%x", window];
-
         cocoaWindow.delegate = self;
 
         xcb_get_geometry_reply_t *geom = xcb_get_geometry_reply(self.connection,
@@ -1057,6 +724,26 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
             [self captureAndDisplayWindow:event->window];
         }
     });
+}
+
+- (void)windowDidResize:(NSNotification *)notification {
+    NSWindow *cocoaWindow = notification.object;
+    NSNumber *foundKey = nil;
+    for (NSNumber *key in self.windows) {
+        if (self.windows[key] == cocoaWindow) {
+            foundKey = key;
+            break;
+        }
+    }
+
+    if (foundKey) {
+        xcb_window_t xWindow = (xcb_window_t)[foundKey unsignedIntValue];
+        NSRect contentRect = [cocoaWindow contentRectForFrameRect:cocoaWindow.frame];
+        uint32_t values[] = { (uint32_t)contentRect.size.width, (uint32_t)contentRect.size.height };
+        xcb_configure_window(_connection, xWindow, XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, values);
+        xcb_flush(_connection);
+        [self captureAndDisplayWindow:xWindow];
+    }
 }
 
 - (void)windowDidResignKey:(NSNotification *)notification {
