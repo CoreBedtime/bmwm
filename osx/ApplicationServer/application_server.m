@@ -18,6 +18,8 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
+extern int SLSMainConnectionID(void);
+
 static const char *SOCKET_PATH = "/tmp/applicator_focus.sock";
 
 static const char *xorg_paths[] = {
@@ -175,6 +177,7 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
 @property (nonatomic, assign) NSRect sourceFrame;
 @property (nonatomic, assign) NSEventModifierFlags modifierFlagsState;
 - (BOOL)isAppKitBacked;
+- (int)getCID;
 @end
 
 @implementation XClientView
@@ -201,35 +204,14 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
     }
 }
 
-- (BOOL)isAppKitBacked {
-    if (self.connection == NULL || self.xWindow == 0) {
-        return NO;
-    }
-    xcb_intern_atom_cookie_t cookie = xcb_intern_atom(self.connection, 1, 18, "_APP_LAUNCH_APPKIT");
-    xcb_intern_atom_reply_t *reply = xcb_intern_atom_reply(self.connection, cookie, NULL);
-    if (reply == NULL) {
-        return NO;
-    }
-    xcb_atom_t propAtom = reply->atom;
-    free(reply);
-
-    xcb_get_property_cookie_t propCookie = xcb_get_property(self.connection, 0, self.xWindow, propAtom, XCB_ATOM_ANY, 0, 1);
-    xcb_get_property_reply_t *propReply = xcb_get_property_reply(self.connection, propCookie, NULL);
-    if (propReply == NULL) {
-        return NO;
-    }
-    BOOL exists = (propReply->format == 32 && xcb_get_property_value_length(propReply) >= 4);
-    free(propReply);
-    return exists;
-}
-
-- (uint32_t)getNativeWindowID {
+- (int)getCID {
     if (self.connection == NULL || self.xWindow == 0) {
         return 0;
     }
-    xcb_intern_atom_cookie_t cookie = xcb_intern_atom(self.connection, 1, 21, "_APP_LAUNCH_NATIVE_ID");
+    xcb_intern_atom_cookie_t cookie = xcb_intern_atom(self.connection, 0, 15, "_APP_LAUNCH_CID");
     xcb_intern_atom_reply_t *reply = xcb_intern_atom_reply(self.connection, cookie, NULL);
     if (reply == NULL) {
+        NSLog(@"[getCID] atom reply NULL");
         return 0;
     }
     xcb_atom_t propAtom = reply->atom;
@@ -238,14 +220,18 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
     xcb_get_property_cookie_t propCookie = xcb_get_property(self.connection, 0, self.xWindow, propAtom, XCB_ATOM_ANY, 0, 1);
     xcb_get_property_reply_t *propReply = xcb_get_property_reply(self.connection, propCookie, NULL);
     if (propReply == NULL) {
+        NSLog(@"[getCID] prop reply NULL");
         return 0;
     }
-    uint32_t nativeId = 0;
+    int cid = 0;
     if (propReply->format == 32 && xcb_get_property_value_length(propReply) >= 4) {
-        nativeId = *(uint32_t *)xcb_get_property_value(propReply);
+        cid = *(int *)xcb_get_property_value(propReply);
+    } else {
+        NSLog(@"[getCID] format=%d, len=%d", propReply->format, xcb_get_property_value_length(propReply));
     }
     free(propReply);
-    return nativeId;
+    NSLog(@"[getCID] returning %d", cid);
+    return cid;
 }
 
 - (BOOL)acceptsFirstMouse:(NSEvent *)event {
@@ -457,10 +443,11 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
     fcntl(self.server_fd, F_SETFL, flags | O_NONBLOCK);
 }
 
-- (void)updateFocusClientsWithWindow:(xcb_window_t)xWindow nativeWindowId:(uint32_t)nativeWindowId isAppKitBacked:(BOOL)isAppKitBacked {
+- (void)updateFocusClientsWithWindow:(xcb_window_t)xWindow cid:(int)cid {
     if (self.server_fd < 0) return;
 
-    NSString *message = [NSString stringWithFormat:@"%u %u %d\n", nativeWindowId, xWindow, isAppKitBacked ? 1 : 0];
+    if (cid == 0) cid = 333;
+    NSString *message = [NSString stringWithFormat:@"0 %u 0 %d\n", xWindow, cid];
     NSLog(@"[AppSrv] Broadcasting focus change: %@", message);
     [self broadcastToClients:message];
 
@@ -992,42 +979,17 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
             [existingWindow release];
         }
 
-        BOOL isAppKitBacked = NO;
-        uint32_t nativeWindowId = 0;
-        int wait_count = 0;
-        // Wait up to 500ms (100 * 5ms) for properties
-        // This handles AppKit apps becoming ready while allowing X-only apps to show
-        while (wait_count < 100) {
-            xcb_intern_atom_cookie_t native_atom_cookie = xcb_intern_atom(_connection, 1, 21, "_APP_LAUNCH_NATIVE_ID");
-            xcb_intern_atom_reply_t *native_atom_reply = xcb_intern_atom_reply(_connection, native_atom_cookie, NULL);
-            if (native_atom_reply) {
-                xcb_get_property_cookie_t native_prop_cookie = xcb_get_property(_connection, 0, window, native_atom_reply->atom, XCB_ATOM_ANY, 0, 1);
-                xcb_get_property_reply_t *native_prop_reply = xcb_get_property_reply(_connection, native_prop_cookie, NULL);
-                if (native_prop_reply && native_prop_reply->format == 32 && xcb_get_property_value_length(native_prop_reply) >= 4) {
-                    nativeWindowId = *(uint32_t *)xcb_get_property_value(native_prop_reply);
-                }
-                if (native_prop_reply) free(native_prop_reply);
-                free(native_atom_reply);
+        int cid = 0;
+        xcb_intern_atom_cookie_t cid_atom_cookie = xcb_intern_atom(_connection, 0, 15, "_APP_LAUNCH_CID");
+        xcb_intern_atom_reply_t *cid_atom_reply = xcb_intern_atom_reply(_connection, cid_atom_cookie, NULL);
+        if (cid_atom_reply) {
+            xcb_get_property_cookie_t cid_prop_cookie = xcb_get_property(_connection, 0, window, cid_atom_reply->atom, XCB_ATOM_ANY, 0, 1);
+            xcb_get_property_reply_t *cid_prop_reply = xcb_get_property_reply(_connection, cid_prop_cookie, NULL);
+            if (cid_prop_reply && cid_prop_reply->format == 32 && xcb_get_property_value_length(cid_prop_reply) >= 4) {
+                cid = *(int *)xcb_get_property_value(cid_prop_reply);
             }
-
-            xcb_intern_atom_cookie_t atom_cookie = xcb_intern_atom(_connection, 1, 18, "_APP_LAUNCH_APPKIT");
-            xcb_intern_atom_reply_t *atom_reply = xcb_intern_atom_reply(_connection, atom_cookie, NULL);
-            if (atom_reply) {
-                xcb_get_property_cookie_t prop_cookie = xcb_get_property(_connection, 0, window, atom_reply->atom, XCB_ATOM_ANY, 0, 1);
-                xcb_get_property_reply_t *prop_reply = xcb_get_property_reply(_connection, prop_cookie, NULL);
-                if (prop_reply && prop_reply->format == 32 && xcb_get_property_value_length(prop_reply) > 0) {
-                    isAppKitBacked = YES;
-                }
-                if (prop_reply) free(prop_reply);
-                free(atom_reply);
-            }
-
-            if (nativeWindowId != 0 || isAppKitBacked) {
-                break;
-            }
-            
-            usleep(5000); // 5ms
-            wait_count++;
+            if (cid_prop_reply) free(cid_prop_reply);
+            free(cid_atom_reply);
         }
 
         NSWindowStyleMask styleMask = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
@@ -1063,7 +1025,7 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
         [cocoaWindow makeKeyAndOrderFront:nil];
 
         [self captureAndDisplayWindow:window];
-        [self updateFocusClientsWithWindow:window nativeWindowId:nativeWindowId isAppKitBacked:isAppKitBacked];
+        [self updateFocusClientsWithWindow:window cid:cid];
 
         xcb_configure_window(_connection, window, XCB_CONFIG_WINDOW_BORDER_WIDTH, (uint32_t[]){0});
         xcb_map_window(_connection, window);
@@ -1119,12 +1081,15 @@ static uint8_t mac_keycode_to_x11_keycode(unsigned short keyCode) {
             break;
         }
     }
+    NSLog(@"[AppSrv] windowDidBecomeKey: foundKey=%@", foundKey);
     if (foundKey) {
         xcb_window_t xWindow = (xcb_window_t)[foundKey unsignedIntValue];
         XClientView *view = (XClientView *)self.imageViews[foundKey];
-        BOOL isAppKitBacked = view ? [view isAppKitBacked] : NO;
-        uint32_t nativeWindowId = view ? [view getNativeWindowID] : 0;
-        [self updateFocusClientsWithWindow:xWindow nativeWindowId:nativeWindowId isAppKitBacked:isAppKitBacked];
+        NSLog(@"[AppSrv] windowDidBecomeKey: view=%@", view);
+        NSLog(@"[AppSrv] windowDidBecomeKey: calling getCID");
+        int cid = view ? [view getCID] : 0;
+        NSLog(@"[AppSrv] windowDidBecomeKey: xWindow=%u, cid=%d", xWindow, cid);
+        [self updateFocusClientsWithWindow:xWindow cid:cid];
 
         NSView *firstResponder = self.imageViews[foundKey];
         if (firstResponder != nil) {
