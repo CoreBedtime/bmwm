@@ -1,50 +1,27 @@
 #import "application_server.h"
 #include <AppKit/AppKit.h>
-#include <CoreFoundation/CFCGTypes.h>
 #import <Cocoa/Cocoa.h>
 #import <xcb/xcb.h>
-#import <xcb/xcb_util.h>
-#import <xcb/xcb_event.h>
-#import <xcb/xtest.h>
 #import <xcb/composite.h>
-
-#include <sys/wait.h>
-#include <unistd.h>
-#include <stdlib.h>
-#include <sys/stat.h>
-#include <sys/select.h>
-#include <errno.h>
-#include <time.h>
-#include <sys/socket.h>
-#include <sys/un.h>
+#include <dlfcn.h>
 
 #import "XClientWindow.h"
 #import "XClientView.h"
-#import "KeycodeMapping.h"
+#import "XorgServer.h"
+#import "FocusSocket.h"
 
-extern int SLSMainConnectionID(void);
-
-static const char *SOCKET_PATH = "/tmp/applicator_focus.sock";
-
-static const char *xorg_paths[] = {
-    "/opt/local/bin/Xorg",
-    "/opt/X11/bin/Xorg",
-    NULL
-};
+static const char *FOCUS_SOCKET_PATH = "/tmp/applicator_focus.sock";
 
 @interface ApplicationServer () <NSWindowDelegate, NSApplicationDelegate>
 @property (nonatomic, assign) xcb_connection_t *connection;
 @property (nonatomic, assign) xcb_screen_t *screen;
 @property (nonatomic, assign) xcb_window_t rootWindow;
-@property (nonatomic, assign) pid_t xorg_pid;
-@property (nonatomic, assign) int display_number;
+@property (nonatomic, retain) XorgServer *xorg;
+@property (nonatomic, retain) FocusSocket *focusSocket;
 @property (nonatomic, assign) BOOL running;
-@property (nonatomic, assign) NSMutableDictionary<NSNumber *, NSWindow *> *windows;
-@property (nonatomic, assign) NSMutableDictionary<NSNumber *, NSImageView *> *imageViews;
-@property (nonatomic, assign) NSString *xorgConfigPath;
-@property (nonatomic, assign) NSString *xorgLogPath;
-@property (nonatomic, assign) NSTimer *refreshTimer;
-@property (nonatomic, assign) int server_fd;
+@property (nonatomic, retain) NSMutableDictionary<NSNumber *, NSWindow *> *windows;
+@property (nonatomic, retain) NSMutableDictionary<NSNumber *, NSImageView *> *imageViews;
+@property (nonatomic, retain) NSTimer *refreshTimer;
 @end
 
 @implementation ApplicationServer
@@ -55,94 +32,16 @@ static const char *xorg_paths[] = {
         _windows = [[NSMutableDictionary alloc] init];
         _imageViews = [[NSMutableDictionary alloc] init];
         _running = NO;
-        _xorg_pid = -1;
-        _server_fd = -1;
+        _xorg = [[XorgServer alloc] init];
+        _focusSocket = [[FocusSocket alloc] init];
     }
     return self;
-}
-
-- (void)broadcastFocusChange:(xcb_window_t)xWindow isAppKitBacked:(BOOL)isAppKitBacked {
-    if (self.server_fd < 0) return;
-
-    NSString *message = [NSString stringWithFormat:@"%u %d\n", xWindow, isAppKitBacked];
-}
-
-- (void)setupFocusSocket {
-    unlink(SOCKET_PATH);
-    self.server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (self.server_fd < 0) return;
-
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
-
-    if (bind(self.server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        close(self.server_fd);
-        self.server_fd = -1;
-        return;
-    }
-
-    if (listen(self.server_fd, 5) < 0) {
-        close(self.server_fd);
-        self.server_fd = -1;
-        return;
-    }
-
-    int flags = fcntl(self.server_fd, F_GETFL, 0);
-    fcntl(self.server_fd, F_SETFL, flags | O_NONBLOCK);
-}
-
-- (void)updateFocusClientsWithWindow:(xcb_window_t)xWindow cid:(int)cid {
-    if (self.server_fd < 0) return;
-
-    if (cid == 0) cid = 333;
-    NSString *message = [NSString stringWithFormat:@"0 %u 0 %d\n", xWindow, cid];
-    NSLog(@"[AppSrv] Broadcasting focus change: %@", message);
-    [self broadcastToClients:message];
-
-    int sock = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (sock >= 0) {
-        struct sockaddr_un addr;
-        memset(&addr, 0, sizeof(addr));
-        addr.sun_family = AF_UNIX;
-        strncpy(addr.sun_path, "/tmp/applicator_loader.sock", sizeof(addr.sun_path) - 1);
-
-        if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
-            NSLog(@"[AppSrv] Successfully connected and sent to loader socket");
-            send(sock, [message UTF8String], [message length], 0);
-        } else {
-            NSLog(@"[AppSrv] Failed to connect to loader socket: %s", strerror(errno));
-        }
-        close(sock);
-    } else {
-        NSLog(@"[AppSrv] Failed to create socket for loader: %s", strerror(errno));
-    }
-}
-
-- (void)broadcastToClients:(NSString *)message {
-    int client_fd;
-    while ((client_fd = accept(self.server_fd, NULL, NULL)) >= 0) {
-        send(client_fd, [message UTF8String], [message length], 0);
-        close(client_fd);
-    }
-}
-
-- (void)handleIncomingSocketData {
-    int client_fd;
-    while ((client_fd = accept(self.server_fd, NULL, NULL)) >= 0) {
-        char buffer[1024];
-        recv(client_fd, buffer, sizeof(buffer), 0);
-        close(client_fd);
-    }
 }
 
 - (void)closeCocoaWindowForXWindow:(xcb_window_t)xWindow {
     NSNumber *windowKey = @(xWindow);
     NSWindow *window = [self.windows objectForKey:windowKey];
-    if (window == nil) {
-        return;
-    }
+    if (!window) return;
 
     [window retain];
     [self.windows removeObjectForKey:windowKey];
@@ -160,229 +59,24 @@ static const char *xorg_paths[] = {
     [window release];
 }
 
-- (const char *)findXorg {
-    for (int i = 0; xorg_paths[i] != NULL; i++) {
-        if (access(xorg_paths[i], X_OK) == 0) {
-            return xorg_paths[i];
-        }
-    }
-    return NULL;
-}
-
-- (int)writeXorgConfigWithWidth:(int)width height:(int)height {
-    char config_template[] = "/tmp/applicator-xorg-XXXXXX";
-    int config_fd = mkstemp(config_template);
-    if (config_fd < 0) {
-        return -1;
-    }
-
-    _xorgConfigPath = [NSString stringWithUTF8String:config_template];
-
-    char log_path[256];
-    snprintf(log_path, sizeof(log_path), "/tmp/applicator-xorg-%ld.log", (long)getpid());
-    _xorgLogPath = [NSString stringWithUTF8String:log_path];
-
-    char mode_name[] = "Mode0";
-    char modeline[] = "173.00 1920 2048 2248 2576 1080 1083 1088 1120 -hsync +vsync";
-
-    FILE *config = fdopen(config_fd, "w");
-    if (!config) {
-        close(config_fd);
-        return -1;
-    }
-
-    fprintf(config,
-        "Section \"ServerLayout\"\n"
-        "    Identifier \"Layout0\"\n"
-        "    Screen \"Screen0\"\n"
-        "    InputDevice \"Mouse0\" \"CorePointer\"\n"
-        "    InputDevice \"Keyboard0\" \"CoreKeyboard\"\n"
-        "EndSection\n"
-        "\n"
-        "Section \"InputDevice\"\n"
-        "    Identifier \"Mouse0\"\n"
-        "    Driver \"void\"\n"
-        "EndSection\n"
-        "\n"
-        "Section \"InputDevice\"\n"
-        "    Identifier \"Keyboard0\"\n"
-        "    Driver \"void\"\n"
-        "EndSection\n"
-        "\n"
-        "Section \"Monitor\"\n"
-        "    Identifier \"Monitor0\"\n"
-        "    HorizSync 1.0-300.0\n"
-        "    VertRefresh 1.0-300.0\n"
-        "    Modeline \"%s\" %s\n"
-        "EndSection\n"
-        "\n"
-        "Section \"Device\"\n"
-        "    Identifier \"DummyDevice\"\n"
-        "    Driver \"dummy\"\n"
-        "    VideoRam 512000\n"
-        "    Option \"Shadow\" \"no\"\n"
-        "EndSection\n"
-        "\n"
-        "Section \"Screen\"\n"
-        "    Identifier \"Screen0\"\n"
-        "    Device \"DummyDevice\"\n"
-        "    Monitor \"Monitor0\"\n"
-        "    DefaultDepth 24\n"
-        "    SubSection \"Display\"\n"
-        "        Depth 24\n"
-        "        Modes \"%s\"\n"
-        "        Virtual %d %d\n"
-        "        ViewPort 0 0\n"
-        "    EndSubSection\n"
-        "EndSection\n",
-        mode_name, modeline, mode_name, width, height);
-
-    fclose(config);
-    return 0;
-}
-
-- (int)waitForDisplayFd:(int)fd displayNumber:(int *)displayNumber {
-    char buffer[64] = {0};
-    ssize_t total_read = 0;
-    struct timeval timeout = { .tv_sec = 10, .tv_usec = 0 };
-
-    fd_set read_fds;
-    FD_ZERO(&read_fds);
-    FD_SET(fd, &read_fds);
-
-    int select_result = select(fd + 1, &read_fds, NULL, NULL, &timeout);
-    if (select_result <= 0) {
-        return -1;
-    }
-
-    ssize_t n = read(fd, buffer, sizeof(buffer) - 1);
-    if (n <= 0) {
-        return -1;
-    }
-    total_read += n;
-
-    char *endptr = NULL;
-    long display = strtol(buffer, &endptr, 10);
-    if (endptr == buffer || display < 0 || display > 1024) {
-        return -1;
-    }
-
-    *displayNumber = (int)display;
-    return 0;
-}
-
-- (int)spawnXorg {
-    const char *xorg = [self findXorg];
-    if (!xorg) {
-        NSLog(@"Failed to find Xorg");
-        return -1;
-    }
-
-    mkdir("/tmp/.X11-unix", 0777);
-    chmod("/tmp/.X11-unix", 01777);
-
-    if ([self writeXorgConfigWithWidth:1920 height:1080] != 0) {
-        NSLog(@"Failed to write Xorg config");
-        return -1;
-    }
-
-    int display_pipe[2];
-    if (pipe(display_pipe) != 0) {
-        NSLog(@"Failed to create display pipe: %s", strerror(errno));
-        return -1;
-    }
-
-    pid_t pid = fork();
-    if (pid < 0) {
-        close(display_pipe[0]);
-        close(display_pipe[1]);
-        NSLog(@"Failed to fork: %s", strerror(errno));
-        return -1;
-    }
-
-    if (pid == 0) {
-        close(display_pipe[0]);
-        if (dup2(display_pipe[1], 99) < 0) {
-            _exit(127);
-        }
-        close(display_pipe[1]);
-
-        int devnull = open("/dev/null", O_RDWR);
-        if (devnull >= 0) {
-            dup2(devnull, STDIN_FILENO);
-            dup2(devnull, STDOUT_FILENO);
-            dup2(devnull, STDERR_FILENO);
-            if (devnull > STDERR_FILENO) {
-                close(devnull);
-            }
-        }
-
-        char *argv[16];
-        size_t argc = 0;
-
-        argv[argc++] = (char *)xorg;
-        argv[argc++] = "-quiet";
-        argv[argc++] = "-config";
-        argv[argc++] = (char *)[_xorgConfigPath UTF8String];
-        argv[argc++] = "-noreset";
-        argv[argc++] = "-logfile";
-        argv[argc++] = (char *)[_xorgLogPath UTF8String];
-        argv[argc++] = "-displayfd";
-        argv[argc++] = "99";
-        argv[argc++] = "-listen";
-        argv[argc++] = "local";
-        argv[argc] = NULL;
-
-        execv(xorg, argv);
-        _exit(127);
-    }
-
-    close(display_pipe[1]);
-
-    int display_num = -1;
-    if ([self waitForDisplayFd:display_pipe[0] displayNumber:&display_num] != 0) {
-        close(display_pipe[0]);
-        NSLog(@"Failed to get display number from Xorg");
-        return -1;
-    }
-    close(display_pipe[0]);
-
-    _display_number = display_num;
-    _xorg_pid = pid;
-
-    NSLog(@"Xorg started on display :%d", _display_number);
-    return 0;
-}
-
 - (BOOL)connectToXServer {
     char display[64];
-    snprintf(display, sizeof(display), ":%d", _display_number);
+    snprintf(display, sizeof(display), ":%d", self.xorg.displayNumber);
 
     for (int attempt = 0; attempt < 50; attempt++) {
         _connection = xcb_connect(display, NULL);
-        if (_connection && !xcb_connection_has_error(_connection)) {
-            break;
-        }
+        if (_connection && !xcb_connection_has_error(_connection)) break;
         usleep(100000);
     }
 
-    if (xcb_connection_has_error(_connection)) {
-        NSLog(@"Failed to connect to X server");
-        return NO;
-    }
+    if (xcb_connection_has_error(_connection)) return NO;
 
     const xcb_setup_t *setup = xcb_get_setup(_connection);
     xcb_screen_iterator_t iter = xcb_setup_roots_iterator(setup);
     _screen = iter.data;
     _rootWindow = _screen->root;
 
-    uint32_t event_mask = XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY |
-                          XCB_EVENT_MASK_EXPOSURE |
-                          XCB_EVENT_MASK_BUTTON_PRESS |
-                          XCB_EVENT_MASK_BUTTON_RELEASE |
-                          XCB_EVENT_MASK_POINTER_MOTION |
-                          XCB_EVENT_MASK_KEY_PRESS |
-                          XCB_EVENT_MASK_KEY_RELEASE;
+    uint32_t event_mask = XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY | XCB_EVENT_MASK_EXPOSURE | XCB_EVENT_MASK_BUTTON_PRESS | XCB_EVENT_MASK_BUTTON_RELEASE | XCB_EVENT_MASK_POINTER_MOTION | XCB_EVENT_MASK_KEY_PRESS | XCB_EVENT_MASK_KEY_RELEASE;
     xcb_change_window_attributes(_connection, _rootWindow, XCB_CW_EVENT_MASK, &event_mask);
 
     xcb_composite_query_version_cookie_t comp_cookie = xcb_composite_query_version(_connection, 0, 4);
@@ -393,34 +87,25 @@ static const char *xorg_paths[] = {
     }
 
     xcb_flush(_connection);
-
     return YES;
 }
 
 - (BOOL)start {
-    [self setupFocusSocket];
-    if ([self spawnXorg] != 0) {
-        return NO;
-    }
-
-    if (![self connectToXServer]) {
-        return NO;
-    }
+    if (![self.focusSocket setup:FOCUS_SOCKET_PATH]) return NO;
+    if (![self.xorg spawnWithWidth:1920 height:1080]) return NO;
+    if (![self connectToXServer]) return NO;
 
     _running = YES;
-
-    __block id blockSelf = self;
+    __block ApplicationServer *blockSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
         self.refreshTimer = [NSTimer scheduledTimerWithTimeInterval:1.0/60.0 repeats:YES block:^(NSTimer * _Nonnull timer) {
             [blockSelf retain];
-            [blockSelf handleIncomingSocketData];
+            [blockSelf.focusSocket handleIncomingData];
             NSMutableArray *toRemove = [NSMutableArray array];
             for (NSNumber *windowId in [blockSelf windows]) {
                 xcb_window_t xWin = (xcb_window_t)[windowId unsignedIntValue];
-                
-                // 1. Check if window still exists and is mapped
-                xcb_get_window_attributes_cookie_t attr_cookie = xcb_get_window_attributes([blockSelf connection], xWin);
-                xcb_get_window_attributes_reply_t *attr = xcb_get_window_attributes_reply([blockSelf connection], attr_cookie, NULL);
+                xcb_get_window_attributes_cookie_t attr_cookie = xcb_get_window_attributes((xcb_connection_t *)[blockSelf connection], xWin);
+                xcb_get_window_attributes_reply_t *attr = xcb_get_window_attributes_reply((xcb_connection_t *)[blockSelf connection], attr_cookie, NULL);
                 if (!attr || attr->map_state == XCB_MAP_STATE_UNMAPPED) {
                     [toRemove addObject:windowId];
                     if (attr) free(attr);
@@ -428,40 +113,27 @@ static const char *xorg_paths[] = {
                 }
                 free(attr);
 
-                // 2. Check if owner PID still exists (if available)
-                xcb_intern_atom_cookie_t pid_atom_cookie = xcb_intern_atom([blockSelf connection], 0, 11, "_NET_WM_PID");
-                xcb_intern_atom_reply_t *pid_atom_reply = xcb_intern_atom_reply([blockSelf connection], pid_atom_cookie, NULL);
+                xcb_intern_atom_cookie_t pid_atom_cookie = xcb_intern_atom((xcb_connection_t *)[blockSelf connection], 0, 11, "_NET_WM_PID");
+                xcb_intern_atom_reply_t *pid_atom_reply = xcb_intern_atom_reply((xcb_connection_t *)[blockSelf connection], pid_atom_cookie, NULL);
                 if (pid_atom_reply) {
-                    xcb_get_property_cookie_t prop_cookie = xcb_get_property([blockSelf connection], 0, xWin, pid_atom_reply->atom, XCB_ATOM_CARDINAL, 0, 1);
-                    xcb_get_property_reply_t *prop_reply = xcb_get_property_reply([blockSelf connection], prop_cookie, NULL);
+                    xcb_get_property_cookie_t prop_cookie = xcb_get_property((xcb_connection_t *)[blockSelf connection], 0, xWin, pid_atom_reply->atom, XCB_ATOM_CARDINAL, 0, 1);
+                    xcb_get_property_reply_t *prop_reply = xcb_get_property_reply((xcb_connection_t *)[blockSelf connection], prop_cookie, NULL);
                     if (prop_reply && prop_reply->format == 32 && xcb_get_property_value_length(prop_reply) >= 4) {
                         pid_t owner_pid = *(pid_t *)xcb_get_property_value(prop_reply);
-                        if (kill(owner_pid, 0) == -1 && errno == ESRCH) {
-                            [toRemove addObject:windowId];
-                        }
+                        if (kill(owner_pid, 0) == -1 && errno == ESRCH) [toRemove addObject:windowId];
                     }
                     if (prop_reply) free(prop_reply);
                     free(pid_atom_reply);
                 }
 
-                if (![toRemove containsObject:windowId]) {
-                    [blockSelf captureAndDisplayWindow:xWin];
-                }
+                if (![toRemove containsObject:windowId]) [blockSelf captureAndDisplayWindow:xWin];
             }
-            for (NSNumber *windowId in toRemove) {
-                [blockSelf closeCocoaWindowForXWindow:(xcb_window_t)[windowId unsignedIntValue]];
-            }
+            for (NSNumber *windowId in toRemove) [blockSelf closeCocoaWindowForXWindow:(xcb_window_t)[windowId unsignedIntValue]];
             [blockSelf release];
         }];
         [[NSRunLoop mainRunLoop] addTimer:self.refreshTimer forMode:NSRunLoopCommonModes];
     });
 
-    [self runEventLoop];
-
-    return YES;
-}
-
-- (void)runEventLoop {
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         while (self.running) {
             xcb_generic_event_t *event = xcb_wait_for_event(self.connection);
@@ -471,380 +143,148 @@ static const char *xorg_paths[] = {
             }
         }
     });
+
+    return YES;
 }
 
 - (void)handleEvent:(xcb_generic_event_t *)event {
     uint8_t type = event->response_type & ~0x80;
-
     switch (type) {
-        case XCB_MAP_NOTIFY:
-            [self handleMapNotify:(xcb_map_notify_event_t *)event];
-            break;
-        case XCB_UNMAP_NOTIFY:
-            [self handleUnmapNotify:(xcb_unmap_notify_event_t *)event];
-            break;
-        case XCB_DESTROY_NOTIFY:
-            [self handleDestroyNotify:(xcb_destroy_notify_event_t *)event];
-            break;
-        case XCB_CONFIGURE_NOTIFY:
-            [self handleConfigureNotify:(xcb_configure_notify_event_t *)event];
-            break;
-        case XCB_EXPOSE:
-            [self handleExpose:(xcb_expose_event_t *)event];
-            break;
+        case XCB_MAP_NOTIFY: [self handleMapNotify:(xcb_map_notify_event_t *)event]; break;
+        case XCB_UNMAP_NOTIFY: dispatch_async(dispatch_get_main_queue(), ^{ [self closeCocoaWindowForXWindow:((xcb_unmap_notify_event_t *)event)->window]; }); break;
+        case XCB_DESTROY_NOTIFY: dispatch_async(dispatch_get_main_queue(), ^{ [self closeCocoaWindowForXWindow:((xcb_destroy_notify_event_t *)event)->window]; }); break;
+        case XCB_CONFIGURE_NOTIFY: [self handleConfigureNotify:(xcb_configure_notify_event_t *)event]; break;
+        case XCB_EXPOSE: dispatch_async(dispatch_get_main_queue(), ^{ if (self.windows[@(((xcb_expose_event_t *)event)->window)]) [self captureAndDisplayWindow:((xcb_expose_event_t *)event)->window]; }); break;
     }
 }
 
 - (void)captureAndDisplayWindow:(xcb_window_t)xWindow {
     [self retain];
-
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        xcb_get_geometry_reply_t *geom = xcb_get_geometry_reply(self.connection,
-            xcb_get_geometry(self.connection, xWindow), NULL);
+        xcb_get_geometry_reply_t *geom = xcb_get_geometry_reply(self.connection, xcb_get_geometry(self.connection, xWindow), NULL);
+        if (!geom) { [self release]; return; }
+        xcb_get_image_reply_t *reply = xcb_get_image_reply(self.connection, xcb_get_image(self.connection, XCB_IMAGE_FORMAT_Z_PIXMAP, xWindow, 0, 0, geom->width, geom->height, UINT32_MAX), NULL);
+        if (!reply) { free(geom); [self release]; return; }
 
-        if (!geom) {
-            [self release];
-            return;
-        }
-
-        xcb_get_image_cookie_t cookie = xcb_get_image(self.connection,
-            XCB_IMAGE_FORMAT_Z_PIXMAP, xWindow, 0, 0, geom->width, geom->height, UINT32_MAX);
-
-        xcb_get_image_reply_t *reply = xcb_get_image_reply(self.connection, cookie, NULL);
-
-        if (!reply) {
-            free(geom);
-            [self release];
-            return;
-        }
-
-        int root_x = geom->x;
-        int root_y = geom->y;
-        int width = geom->width;
-        int height = geom->height;
+        int root_x = geom->x, root_y = geom->y, width = geom->width, height = geom->height;
         free(geom);
-
         const uint8_t *data = xcb_get_image_data(reply);
         int data_len = xcb_get_image_data_length(reply);
+        if (width <= 0 || height <= 0 || data_len < width * height * 4) { free(reply); [self release]; return; }
 
-        if (width <= 0 || height <= 0 || data_len <= 0) {
-            free(reply);
-            return;
-        }
-
-        NSBitmapImageRep *bitmap = [[[NSBitmapImageRep alloc]
-            initWithBitmapDataPlanes:NULL
-                        pixelsWide:width
-                        pixelsHigh:height
-                     bitsPerSample:8
-                   samplesPerPixel:4
-                           hasAlpha:YES
-                           isPlanar:NO
-                     colorSpaceName:NSCalibratedRGBColorSpace
-                        bytesPerRow:width * 4
-                       bitsPerPixel:32] autorelease];
-
+        NSBitmapImageRep *bitmap = [[[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:width pixelsHigh:height bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSCalibratedRGBColorSpace bytesPerRow:width * 4 bitsPerPixel:32] autorelease];
         uint8_t *bitmap_data = [bitmap bitmapData];
-        if (!bitmap_data) {
-            free(reply);
-            return;
-        }
-
-        int pixel_count = width * height;
-        if (data_len >= pixel_count * 4) {
-            memcpy(bitmap_data, data, pixel_count * 4);
-            for (int i = 0; i < pixel_count; i++) {
-                uint8_t b = bitmap_data[i*4 + 0];
-                uint8_t g = bitmap_data[i*4 + 1];
-                uint8_t r = bitmap_data[i*4 + 2];
-                bitmap_data[i*4 + 0] = r;
-                bitmap_data[i*4 + 1] = g;
-                bitmap_data[i*4 + 2] = b;
-                bitmap_data[i*4 + 3] = 255;
-            }
-        } else if (data_len >= pixel_count * 3) {
-            for (int i = 0; i < pixel_count; i++) {
-                bitmap_data[i*4 + 0] = data[i*3 + 2];
-                bitmap_data[i*4 + 1] = data[i*3 + 1];
-                bitmap_data[i*4 + 2] = data[i*3 + 0];
-                bitmap_data[i*4 + 3] = 255;
-            }
+        memcpy(bitmap_data, data, width * height * 4);
+        for (int i = 0; i < width * height; i++) {
+            uint8_t b = bitmap_data[i*4 + 0], g = bitmap_data[i*4 + 1], r = bitmap_data[i*4 + 2];
+            bitmap_data[i*4 + 0] = r; bitmap_data[i*4 + 1] = g; bitmap_data[i*4 + 2] = b; bitmap_data[i*4 + 3] = 255;
         }
 
         NSImage *image = [[[NSImage alloc] initWithSize:NSMakeSize(width, height)] autorelease];
         [image addRepresentation:bitmap];
-
         CGFloat scale = [NSScreen mainScreen].backingScaleFactor;
-        if (scale > 1.0) {
-            image.size = NSMakeSize(width / scale, height / scale);
-        }
+        if (scale > 1.0) image.size = NSMakeSize(width / scale, height / scale);
 
         dispatch_async(dispatch_get_main_queue(), ^{
-            NSWindow *cocoaWindow = [self.windows objectForKey:@(xWindow)];
-            if (!cocoaWindow) {
-                [self release];
-                return;
-            }
-
+            NSWindow *cocoaWindow = self.windows[@(xWindow)];
+            if (!cocoaWindow) { [self release]; return; }
             XClientView *imageView = (XClientView *)self.imageViews[@(xWindow)];
-            NSRect sourceFrame = NSMakeRect(root_x, root_y, width, height );
-
-            if (imageView) {
-                imageView.sourceFrame = sourceFrame;
-                imageView.image = image;
-            } else {
+            NSRect sourceFrame = NSMakeRect(root_x, root_y, width, height);
+            if (imageView) { imageView.sourceFrame = sourceFrame; imageView.image = image; }
+            else {
                 XClientView *newView = [[[XClientView alloc] initWithFrame:cocoaWindow.contentView.bounds] autorelease];
-                newView.xWindow = xWindow;
-                newView.connection = self.connection;
-                newView.rootWindow = self.rootWindow;
-                newView.sourceFrame = sourceFrame;
-                newView.imageScaling = NSImageScaleAxesIndependently;
-                newView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-                newView.image = image;
-
-                NSTrackingArea *trackingArea = [[[NSTrackingArea alloc] initWithRect:newView.bounds
-                                                                            options:NSTrackingMouseMoved | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect
-                                                                               owner:newView
-                                                                          userInfo:nil] autorelease];
-                [newView addTrackingArea:trackingArea];
-
-                [cocoaWindow.contentView addSubview:newView];
-                [cocoaWindow makeFirstResponder:newView];
-                self.imageViews[@(xWindow)] = newView;
+                newView.xWindow = xWindow; newView.connection = self.connection; newView.rootWindow = self.rootWindow; newView.sourceFrame = sourceFrame;
+                newView.imageScaling = NSImageScaleAxesIndependently; newView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable; newView.image = image;
+                [newView addTrackingArea:[[[NSTrackingArea alloc] initWithRect:newView.bounds options:NSTrackingMouseMoved | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect owner:newView userInfo:nil] autorelease]];
+                [cocoaWindow.contentView addSubview:newView]; [cocoaWindow makeFirstResponder:newView]; self.imageViews[@(xWindow)] = newView;
             }
             [self release];
         });
-
         free(reply);
     });
 }
 
 - (void)handleMapNotify:(xcb_map_notify_event_t *)event {
     xcb_window_t window = event->window;
-
     if (window == _rootWindow) return;
-
-    xcb_get_window_attributes_reply_t *reply = xcb_get_window_attributes_reply(
-        _connection, xcb_get_window_attributes(_connection, window), NULL);
-
+    xcb_get_window_attributes_reply_t *reply = xcb_get_window_attributes_reply(_connection, xcb_get_window_attributes(_connection, window), NULL);
     if (!reply) return;
 
     [self retain];
     dispatch_async(dispatch_get_main_queue(), ^{
-        NSNumber *windowKey = @(window);
-
-        NSWindow *existingWindow = [self.windows objectForKey:windowKey];
-        if (existingWindow) {
-            [existingWindow retain];
-            [self.windows removeObjectForKey:windowKey];
-            NSImageView *existingImageView = [self.imageViews objectForKey:windowKey];
-            if (existingImageView) {
-                [existingImageView removeFromSuperview];
-                [self.imageViews removeObjectForKey:windowKey];
-            }
-            [existingWindow setReleasedWhenClosed:NO];
-            [existingWindow orderOut:nil];
-            [existingWindow close];
-            [existingWindow release];
-        }
-
+        [self closeCocoaWindowForXWindow:window];
         int cid = 0;
-        xcb_intern_atom_cookie_t cid_atom_cookie = xcb_intern_atom(_connection, 0, 15, "_APP_LAUNCH_CID");
-        xcb_intern_atom_reply_t *cid_atom_reply = xcb_intern_atom_reply(_connection, cid_atom_cookie, NULL);
+        xcb_intern_atom_reply_t *cid_atom_reply = xcb_intern_atom_reply(_connection, xcb_intern_atom(_connection, 0, 15, "_APP_LAUNCH_CID"), NULL);
         if (cid_atom_reply) {
-            xcb_get_property_cookie_t cid_prop_cookie = xcb_get_property(_connection, 0, window, cid_atom_reply->atom, XCB_ATOM_ANY, 0, 1);
-            xcb_get_property_reply_t *cid_prop_reply = xcb_get_property_reply(_connection, cid_prop_cookie, NULL);
-            if (cid_prop_reply && cid_prop_reply->format == 32 && xcb_get_property_value_length(cid_prop_reply) >= 4) {
-                cid = *(int *)xcb_get_property_value(cid_prop_reply);
-            }
-            if (cid_prop_reply) free(cid_prop_reply);
-            free(cid_atom_reply);
+            xcb_get_property_reply_t *cid_prop_reply = xcb_get_property_reply(_connection, xcb_get_property(_connection, 0, window, cid_atom_reply->atom, XCB_ATOM_ANY, 0, 1), NULL);
+            if (cid_prop_reply && cid_prop_reply->format == 32 && xcb_get_property_value_length(cid_prop_reply) >= 4) cid = *(int *)xcb_get_property_value(cid_prop_reply);
+            if (cid_prop_reply) free(cid_prop_reply); free(cid_atom_reply);
         }
 
-        NSWindowStyleMask styleMask = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
-                                      NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
+        NSWindow *cocoaWindow = [[[XClientWindow alloc] initWithContentRect:NSMakeRect(100, 100, 800, 600) styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable | NSWindowStyleMaskFullSizeContentView backing:NSBackingStoreBuffered defer:NO] autorelease];
+        cocoaWindow.titlebarAppearsTransparent = YES; cocoaWindow.titleVisibility = NSWindowTitleHidden; cocoaWindow.title = [NSString stringWithFormat:@"X Client 0x%x", window]; cocoaWindow.delegate = self;
 
-        styleMask |= NSWindowStyleMaskFullSizeContentView;
+        xcb_get_geometry_reply_t *geom = xcb_get_geometry_reply(self.connection, xcb_get_geometry(self.connection, window), NULL);
+        if (geom) { [cocoaWindow setFrame:NSMakeRect(100, 100, geom->width, geom->height) display:YES]; free(geom); }
 
-        NSRect frame = NSMakeRect(100, 100, 800, 600);
-        NSWindow *cocoaWindow = [[[XClientWindow alloc] initWithContentRect:frame
-                                                          styleMask:styleMask
-                                                             backing:NSBackingStoreBuffered
-                                                               defer:NO] autorelease];
-        [cocoaWindow setReleasedWhenClosed:NO];
-        [[cocoaWindow standardWindowButton:NSWindowCloseButton] setHidden:YES];
-        [[cocoaWindow standardWindowButton:NSWindowMiniaturizeButton] setHidden:YES];
-        [[cocoaWindow standardWindowButton:NSWindowZoomButton] setHidden:YES];
-
-        cocoaWindow.titlebarAppearsTransparent = YES;
-        cocoaWindow.titleVisibility = NSWindowTitleHidden;
-        cocoaWindow.title = [NSString stringWithFormat:@"X Client 0x%x", window];
-        cocoaWindow.delegate = self;
-
-        xcb_get_geometry_reply_t *geom = xcb_get_geometry_reply(self.connection,
-            xcb_get_geometry(self.connection, window), NULL);
-        if (geom) {
-            [cocoaWindow setFrame:NSMakeRect(100, 100, geom->width, geom->height - 28) display:YES];
-            free(geom);
-        }
-
-        self.windows[@(window)] = cocoaWindow;
-        [cocoaWindow makeKeyAndOrderFront:nil];
-
-        [self captureAndDisplayWindow:window];
-        [self updateFocusClientsWithWindow:window cid:cid];
-
-        xcb_configure_window(_connection, window, XCB_CONFIG_WINDOW_BORDER_WIDTH, (uint32_t[]){0});
-        xcb_map_window(_connection, window);
-
+        self.windows[@(window)] = cocoaWindow; [cocoaWindow makeKeyAndOrderFront:nil];
+        [self captureAndDisplayWindow:window]; [self.focusSocket updateFocusWithWindow:window nativeWindowId:0 cid:cid];
+        xcb_configure_window(_connection, window, XCB_CONFIG_WINDOW_BORDER_WIDTH, (uint32_t[]){0}); xcb_map_window(_connection, window);
         [self release];
     });
-
     free(reply);
-}
-
-- (void)handleUnmapNotify:(xcb_unmap_notify_event_t *)event {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self closeCocoaWindowForXWindow:event->window];
-    });
-}
-
-- (void)handleDestroyNotify:(xcb_destroy_notify_event_t *)event {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self closeCocoaWindowForXWindow:event->window];
-    });
 }
 
 - (void)handleConfigureNotify:(xcb_configure_notify_event_t *)event {
     dispatch_async(dispatch_get_main_queue(), ^{
         NSWindow *window = self.windows[@(event->window)];
-        if (window) {
-            NSRect frame = NSMakeRect(event->x, event->y, event->width, event->height);
-            [window setFrame:frame display:YES];
-            [self captureAndDisplayWindow:event->window];
-        }
+        if (window) { [window setFrame:NSMakeRect(event->x, event->y, event->width, event->height) display:YES]; [self captureAndDisplayWindow:event->window]; }
     });
 }
 
 - (void)windowDidResize:(NSNotification *)notification {
     NSWindow *cocoaWindow = notification.object;
-    NSNumber *foundKey = nil;
     for (NSNumber *key in self.windows) {
         if (self.windows[key] == cocoaWindow) {
-            foundKey = key;
-            break;
+            xcb_window_t xWindow = (xcb_window_t)[key unsignedIntValue];
+            NSRect contentRect = [cocoaWindow contentRectForFrameRect:cocoaWindow.frame];
+            uint32_t values[] = { (uint32_t)contentRect.size.width, (uint32_t)contentRect.size.height };
+            xcb_configure_window(_connection, xWindow, XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, values);
+            xcb_flush(_connection); [self captureAndDisplayWindow:xWindow]; break;
         }
     }
-
-    if (foundKey) {
-        xcb_window_t xWindow = (xcb_window_t)[foundKey unsignedIntValue];
-        NSRect contentRect = [cocoaWindow contentRectForFrameRect:cocoaWindow.frame];
-        uint32_t values[] = { (uint32_t)contentRect.size.width, (uint32_t)contentRect.size.height };
-        xcb_configure_window(_connection, xWindow, XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT, values);
-        xcb_flush(_connection);
-        [self captureAndDisplayWindow:xWindow];
-    }
-}
-
-- (void)windowDidResignKey:(NSNotification *)notification {
-    NSLog(@"[AppSrv] Window resigned key: %@", notification.object);
-}
-
-- (void)handleExpose:(xcb_expose_event_t *)event {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        NSWindow *window = self.windows[@(event->window)];
-        if (window) {
-            [self captureAndDisplayWindow:event->window];
-        }
-    });
 }
 
 - (void)windowDidBecomeKey:(NSNotification *)notification {
     NSWindow *cocoaWindow = notification.object;
-    NSNumber *foundKey = nil;
     for (NSNumber *key in self.windows) {
         if (self.windows[key] == cocoaWindow) {
-            foundKey = key;
-            break;
+            xcb_window_t xWindow = (xcb_window_t)[key unsignedIntValue];
+            XClientView *view = (XClientView *)self.imageViews[key];
+            [self.focusSocket updateFocusWithWindow:xWindow nativeWindowId:0 cid:view ? [view getCID] : 0];
+            if (view) [cocoaWindow makeFirstResponder:view];
+            xcb_set_input_focus(_connection, XCB_INPUT_FOCUS_POINTER_ROOT, xWindow, XCB_CURRENT_TIME);
+            xcb_configure_window(_connection, xWindow, XCB_CONFIG_WINDOW_STACK_MODE, (uint32_t[]){XCB_STACK_MODE_ABOVE});
+            xcb_flush(_connection); break;
         }
-    }
-    NSLog(@"[AppSrv] windowDidBecomeKey: foundKey=%@", foundKey);
-    if (foundKey) {
-        xcb_window_t xWindow = (xcb_window_t)[foundKey unsignedIntValue];
-        XClientView *view = (XClientView *)self.imageViews[foundKey];
-        NSLog(@"[AppSrv] windowDidBecomeKey: view=%@", view);
-        NSLog(@"[AppSrv] windowDidBecomeKey: calling getCID");
-        int cid = view ? [view getCID] : 0;
-        NSLog(@"[AppSrv] windowDidBecomeKey: xWindow=%u, cid=%d", xWindow, cid);
-        [self updateFocusClientsWithWindow:xWindow cid:cid];
-
-        NSView *firstResponder = self.imageViews[foundKey];
-        if (firstResponder != nil) {
-            [cocoaWindow makeFirstResponder:firstResponder];
-        }
-        xcb_set_input_focus(_connection, XCB_INPUT_FOCUS_POINTER_ROOT, xWindow, XCB_CURRENT_TIME);
-
-        uint32_t values[] = { XCB_STACK_MODE_ABOVE };
-        xcb_configure_window(_connection, xWindow, XCB_CONFIG_WINDOW_STACK_MODE, values);
-        xcb_flush(_connection);
     }
 }
 
 - (BOOL)windowShouldClose:(NSWindow *)sender {
-    NSNumber *foundKey = nil;
     for (NSNumber *key in self.windows) {
-        if (self.windows[key] == sender) {
-            foundKey = key;
-            break;
-        }
-    }
-    if (foundKey) {
-        xcb_window_t xWindow = (xcb_window_t)[foundKey unsignedIntValue];
-        xcb_kill_client(_connection, xWindow);
-        xcb_flush(_connection);
+        if (self.windows[key] == sender) { xcb_kill_client(_connection, (xcb_window_t)[key unsignedIntValue]); xcb_flush(_connection); break; }
     }
     return YES;
 }
 
-- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
-    (void)sender;
-    return NO;
-}
-
 - (void)stop {
-    _running = NO;
-    [self.refreshTimer invalidate];
-    self.refreshTimer = nil;
-
-    if (_connection) {
-        xcb_disconnect(_connection);
-        _connection = NULL;
-    }
-
-    if (_server_fd >= 0) {
-        close(_server_fd);
-        _server_fd = -1;
-        unlink(SOCKET_PATH);
-    }
-
-    if (_xorg_pid > 0) {
-        kill(_xorg_pid, SIGTERM);
-        waitpid(_xorg_pid, NULL, 0);
-        _xorg_pid = -1;
-    }
-
-    if (_xorgConfigPath) {
-        unlink([_xorgConfigPath UTF8String]);
-    }
+    _running = NO; [self.refreshTimer invalidate]; self.refreshTimer = nil;
+    if (_connection) { xcb_disconnect(_connection); _connection = NULL; }
+    [self.focusSocket stop]; [self.xorg stop];
 }
 
 - (void)dealloc {
-    [self stop];
-    [_windows release];
-    [_imageViews release];
-    [_xorgConfigPath release];
-    [_xorgLogPath release];
-    [super dealloc];
+    [self stop]; [_windows release]; [_imageViews release]; [_xorg release]; [_focusSocket release]; [super dealloc];
 }
 
 @end
@@ -852,20 +292,29 @@ static const char *xorg_paths[] = {
 int main(int argc, char *argv[]) {
     signal(SIGPIPE, SIG_IGN);
     @autoreleasepool {
-        NSApplication *app = [NSApplication sharedApplication];
-        [app setActivationPolicy:NSApplicationActivationPolicyRegular];
-        [app activateIgnoringOtherApps:YES];
-
-        ApplicationServer *server = [[ApplicationServer alloc] init];
-        app.delegate = server;
-
-        if (![server start]) {
-            [server release];
+        Dl_info info;
+        if (dladdr((void *)main, &info) == 0) {
+            NSLog(@"Failed to get current binary info");
             return 1;
         }
 
-        [app run];
-        [server release];
+        NSString *dylibPath = [[NSString stringWithUTF8String:info.dli_fname] stringByDeletingLastPathComponent];
+        dylibPath = [dylibPath stringByAppendingPathComponent:@"libAppLaunchRunner.dylib"];
+
+        void *handle = dlopen([dylibPath UTF8String], RTLD_NOW);
+        if (!handle) {
+            NSLog(@"Failed to load %@: %s", dylibPath, dlerror());
+        } else {
+            NSLog(@"Loaded AppLaunchRunner dylib from %@", dylibPath);
+        }
+
+        NSApplication *app = [NSApplication sharedApplication];
+        [app setActivationPolicy:NSApplicationActivationPolicyRegular];
+        [app activateIgnoringOtherApps:YES];
+        ApplicationServer *server = [[ApplicationServer alloc] init];
+        app.delegate = server;
+        if (![server start]) { [server release]; return 1; }
+        [app run]; [server release];
     }
     return 0;
 }

@@ -1,8 +1,1 @@
-- metal rendering
-- login window
-- multi monitor / iomfb fixups
-- resize windows
-- widget system
-- work on scriping api
-- pretty up the compositor
-- fix any and all bug
+- make tb patch not pass down DYLD_*, on dlopen.

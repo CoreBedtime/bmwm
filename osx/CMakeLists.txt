@@ -237,6 +237,8 @@ add_executable(ApplicationServer
     ApplicationServer/application_server.m
     ApplicationServer/XClientView.m
     ApplicationServer/XClientWindow.m
+    ApplicationServer/XorgServer.m
+    ApplicationServer/FocusSocket.m
 )
 
 target_compile_options(ApplicationServer PRIVATE
@@ -266,10 +268,15 @@ target_link_libraries(ApplicationServer PRIVATE
 
 add_library(AppLaunchRunner SHARED
     AppLaunch/AppLaunchRunner.m
+    AppLaunch/Mod/ModTitlebarPatchSwizzle.m
+    AppLaunch/Mod/ModTitlebarPatchView.m
+    AppLaunch/Mod/ModTitlebarPatchWindow.m
+    AppLaunch/Mod/ModCornerMaskPatch.m
 )
 
 target_link_libraries(AppLaunchRunner PRIVATE
     "${FOUNDATION_FRAMEWORK}"
+    "${APPKIT_FRAMEWORK}"
 )
 
 set_target_properties(AppLaunchRunner PROPERTIES OUTPUT_NAME "AppLaunchRunner")
