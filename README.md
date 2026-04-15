@@ -1,30 +1,31 @@
 # bmwm
 
-bmwm is a macOS-focused experiment with an  included X11 render-server bridge.
+bmwm is a macOS-focused experiment built around a Frida-backed loader, an X11 render-server bridge, and a small AppLaunch helper.
 
 ## Dependencies
 
-bmwm currently depends on:
+To build the project you need:
 
-- macOS with the Xcode Command Line Tools
+- macOS
+- Xcode Command Line Tools
 - CMake 3.20 or newer
 - Ninja
 - Python 3
 - `codesign`
-- `launchctl`
-- `/usr/libexec/PlistBuddy`
-- a `frida-compile` executable on `PATH`
-- a Frida core devkit, either unpacked locally through `FRIDA_CORE_DEVKIT_ROOT` or downloaded from Frida releases
-- XQuartz, for `/opt/X11/bin/Xorg`, `/opt/X11/bin/cvt`, and `/opt/X11/bin/gtf`
+- `frida-compile`
+- a Frida core devkit, either:
+  - let CMake download it automatically, or
+  - set `FRIDA_CORE_DEVKIT_ROOT` to an unpacked devkit
+- XQuartz, which provides `/opt/X11/bin/Xorg`, `/opt/X11/bin/cvt`, and `/opt/X11/bin/gtf`
+- MacPorts, plus the ports that provide:
+  - LuaJIT (`luajit.h`, `libluajit-5.1`)
+  - XCB and related libraries (`xcb`, `xcb-composite`, `xcb-damage`, `xcb-xtest`, `xcb-render`, `xcb-xfixes`)
+  - X11 (`X11`)
+  - Xcursor (`Xcursor`)
 
-The build resolves these third-party libraries and headers directly:
+If you use `scripts/basic.sh`, you will also need `xterm` and `thunar`.
 
-- LuaJIT (`luajit.h`, `libluajit-5.1`)
-- XCB (`xcb/xcb.h`, `xcb`, `xcb-composite`, `xcb-xtest`, `xcb-render`, `xcb-xfixes`)
-- X11 (`X11`)
-- Xcursor (`Xcursor`)
-
-Use MacPorts! install the ports that provide the libraries above. The CMake files currently look in `/opt/local/include` and `/opt/local/lib` for the third-party dependencies.
+CMake looks for the third-party headers and libraries in `/opt/local/include` and `/opt/local/lib`.
 
 ## Building
 
@@ -32,6 +33,12 @@ Use MacPorts! install the ports that provide the libraries above. The CMake file
 ./quick.sh
 ```
 
+`quick.sh` configures a Ninja build in `.build/ninja` by default. You can override `BUILD_DIR`, `BUILD_TYPE`, or `JOBS` in the environment if needed.
+
+## Running
+
+`scripts/basic.sh` is a local convenience script for starting the built loader and a couple of test apps. It expects `loader-macos` to already be built at `.build/ninja/osx/loader-macos`.
+
 ## License
 
-GPLv3 — see [LICENSE](LICENSE).
+GPLv3 - see [LICENSE.txt](LICENSE.txt).
