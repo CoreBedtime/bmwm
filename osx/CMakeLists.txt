@@ -2,6 +2,17 @@ find_library(BSM_LIBRARY bsm REQUIRED)
 find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
 find_library(COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
 find_library(COREGRAPHICS_FRAMEWORK CoreGraphics REQUIRED)
+find_library(CORETEXT_FRAMEWORK CoreText REQUIRED)
+find_path(FONTCONFIG_INCLUDE_DIR fontconfig/fontconfig.h
+    HINTS
+        /opt/local/include
+    REQUIRED
+)
+find_library(FONTCONFIG_LIBRARY fontconfig
+    HINTS
+        /opt/local/lib
+    REQUIRED
+)
 find_library(IMAGEIO_FRAMEWORK ImageIO REQUIRED)
 find_library(IOKIT_FRAMEWORK IOKit REQUIRED)
 find_library(IOSURFACE_FRAMEWORK IOSurface REQUIRED)
@@ -256,6 +267,7 @@ target_link_libraries(ApplicationServer PRIVATE
     "${XCB_XTEST_LIBRARY}"
     "${XCB_RENDER_LIBRARY}"
     "${XCB_XFIXES_LIBRARY}"
+    "${XCB_DAMAGE_LIBRARY}"
     "${XCB_COMPOSITE_LIBRARY}"
     "${X11_LIBRARY}"
     "${XCURSOR_LIBRARY}"
@@ -268,15 +280,26 @@ target_link_libraries(ApplicationServer PRIVATE
 
 add_library(AppLaunchRunner SHARED
     AppLaunch/AppLaunchRunner.m
+    AppLaunch/Mod/ModFontPatch.m
     AppLaunch/Mod/ModTitlebarPatchSwizzle.m
     AppLaunch/Mod/ModTitlebarPatchView.m
     AppLaunch/Mod/ModTitlebarPatchWindow.m
     AppLaunch/Mod/ModCornerMaskPatch.m
+    AppLaunch/Mod/ModShadowParametersPatch.m
 )
 
 target_link_libraries(AppLaunchRunner PRIVATE
     "${FOUNDATION_FRAMEWORK}"
     "${APPKIT_FRAMEWORK}"
+    "${CORETEXT_FRAMEWORK}"
+    "${COREGRAPHICS_FRAMEWORK}"
+    "${FONTCONFIG_LIBRARY}"
+    dobby_static
+    c++
+)
+
+target_include_directories(AppLaunchRunner PRIVATE
+    "${FONTCONFIG_INCLUDE_DIR}"
 )
 
 set_target_properties(AppLaunchRunner PROPERTIES OUTPUT_NAME "AppLaunchRunner")

@@ -866,7 +866,7 @@ static bool launch_executable(const char *executable_path,
         env_count++;
     }
 
-    env = calloc(env_count + 2, sizeof(char *));
+    env = calloc(env_count + 4, sizeof(char *));
     if (env == NULL) {
         free(spawn_argv);
         return false;
@@ -883,8 +883,40 @@ static bool launch_executable(const char *executable_path,
     snprintf(dyld_env, dyld_len, "DYLD_INSERT_LIBRARIES=%s", helper_path);
     env[idx++] = dyld_env;
 
+    const char *fontConfigFile = "/tmp/applicator-fontconfig/fonts.conf";
+    const char *fontConfigPath = "/tmp/applicator-fontconfig";
+
+    size_t fontconfig_file_len = strlen("FONTCONFIG_FILE=") + strlen(fontConfigFile) + 1;
+    char *fontconfig_file_env = malloc(fontconfig_file_len);
+    if (fontconfig_file_env == NULL) {
+        free(spawn_argv);
+        free(dyld_env);
+        free(env);
+        return false;
+    }
+    snprintf(fontconfig_file_env, fontconfig_file_len, "FONTCONFIG_FILE=%s", fontConfigFile);
+    env[idx++] = fontconfig_file_env;
+
+    size_t fontconfig_path_len = strlen("FONTCONFIG_PATH=") + strlen(fontConfigPath) + 1;
+    char *fontconfig_path_env = malloc(fontconfig_path_len);
+    if (fontconfig_path_env == NULL) {
+        free(spawn_argv);
+        free(dyld_env);
+        free(fontconfig_file_env);
+        free(env);
+        return false;
+    }
+    snprintf(fontconfig_path_env, fontconfig_path_len, "FONTCONFIG_PATH=%s", fontConfigPath);
+    env[idx++] = fontconfig_path_env;
+
     for (char **e = environ; *e != NULL; e++) {
         if (strncmp(*e, "DYLD_INSERT_LIBRARIES=", 21) == 0) {
+            continue;
+        }
+        if (strncmp(*e, "FONTCONFIG_FILE=", 16) == 0) {
+            continue;
+        }
+        if (strncmp(*e, "FONTCONFIG_PATH=", 16) == 0) {
             continue;
         }
         env[idx++] = *e;
@@ -906,6 +938,8 @@ static bool launch_executable(const char *executable_path,
     posix_spawnattr_destroy(&attrs);
     free(spawn_argv);
     free(dyld_env);
+    free(fontconfig_file_env);
+    free(fontconfig_path_env);
     free(env);
 
     if (rc == 0 && child_pid_out != NULL) {

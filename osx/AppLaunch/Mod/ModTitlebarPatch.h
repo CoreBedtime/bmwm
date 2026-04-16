@@ -6,6 +6,7 @@ static NSString *const titlebarContainerViewKey = @"titlebarContainerViewKey";
 static NSString *const originalParentKey = @"originalParentKey";
 
 void ModTitlebarPatchSwizzle(Class cls, SEL orig, SEL swiz);
+void ModTitlebarPatchInit(void);
 
 @interface NSWindow (ModTitlebarPatch)
 - (void)modTitlebarPatch_makeKeyAndOrderFront:(id)sender;

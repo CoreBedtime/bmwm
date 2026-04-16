@@ -3,6 +3,7 @@
 #import <Cocoa/Cocoa.h>
 #import <xcb/xcb.h>
 #import <xcb/composite.h>
+#import <xcb/damage.h>
 #include <dlfcn.h>
 
 #import "XClientWindow.h"
@@ -21,7 +22,9 @@ static const char *FOCUS_SOCKET_PATH = "/tmp/applicator_focus.sock";
 @property (nonatomic, assign) BOOL running;
 @property (nonatomic, retain) NSMutableDictionary<NSNumber *, NSWindow *> *windows;
 @property (nonatomic, retain) NSMutableDictionary<NSNumber *, NSImageView *> *imageViews;
-@property (nonatomic, retain) NSTimer *refreshTimer;
+@property (nonatomic, retain) NSMutableDictionary<NSNumber *, NSNumber *> *damageWindows;
+@property (nonatomic, assign) BOOL damageAvailable;
+@property (nonatomic, assign) uint8_t damageEventBase;
 @end
 
 @implementation ApplicationServer
@@ -31,6 +34,7 @@ static const char *FOCUS_SOCKET_PATH = "/tmp/applicator_focus.sock";
     if (self) {
         _windows = [[NSMutableDictionary alloc] init];
         _imageViews = [[NSMutableDictionary alloc] init];
+        _damageWindows = [[NSMutableDictionary alloc] init];
         _running = NO;
         _xorg = [[XorgServer alloc] init];
         _focusSocket = [[FocusSocket alloc] init];
@@ -57,6 +61,8 @@ static const char *FOCUS_SOCKET_PATH = "/tmp/applicator_focus.sock";
     [window orderOut:nil];
     [window close];
     [window release];
+
+    [self unregisterDamageForWindow:xWindow];
 }
 
 - (BOOL)connectToXServer {
@@ -86,8 +92,57 @@ static const char *FOCUS_SOCKET_PATH = "/tmp/applicator_focus.sock";
         free(comp_reply);
     }
 
+    const xcb_query_extension_reply_t *damage_extension = xcb_get_extension_data(_connection, &xcb_damage_id);
+    if (damage_extension && damage_extension->present) {
+        xcb_damage_query_version_cookie_t damage_cookie =
+            xcb_damage_query_version(_connection, XCB_DAMAGE_MAJOR_VERSION, XCB_DAMAGE_MINOR_VERSION);
+        xcb_damage_query_version_reply_t *damage_reply =
+            xcb_damage_query_version_reply(_connection, damage_cookie, NULL);
+        if (damage_reply) {
+            self.damageAvailable = YES;
+            self.damageEventBase = damage_extension->first_event;
+            free(damage_reply);
+        }
+    }
+
     xcb_flush(_connection);
     return YES;
+}
+
+- (void)registerDamageForWindow:(xcb_window_t)xWindow {
+    if (!self.damageAvailable || _connection == NULL) {
+        return;
+    }
+
+    NSNumber *windowKey = @(xWindow);
+    @synchronized (self) {
+        if ([self.damageWindows objectForKey:windowKey] != nil) {
+            return;
+        }
+
+        xcb_damage_damage_t damage = xcb_generate_id(_connection);
+        xcb_damage_create(_connection, damage, xWindow, XCB_DAMAGE_REPORT_LEVEL_NON_EMPTY);
+        [self.damageWindows setObject:@(damage) forKey:windowKey];
+        xcb_flush(_connection);
+    }
+}
+
+- (void)unregisterDamageForWindow:(xcb_window_t)xWindow {
+    if (_connection == NULL) {
+        return;
+    }
+
+    NSNumber *windowKey = @(xWindow);
+    @synchronized (self) {
+        NSNumber *damageKey = [self.damageWindows objectForKey:windowKey];
+        if (!damageKey) {
+            return;
+        }
+
+        xcb_damage_destroy(_connection, (xcb_damage_damage_t)[damageKey unsignedIntValue]);
+        [self.damageWindows removeObjectForKey:windowKey];
+        xcb_flush(_connection);
+    }
 }
 
 - (BOOL)start {
@@ -96,43 +151,6 @@ static const char *FOCUS_SOCKET_PATH = "/tmp/applicator_focus.sock";
     if (![self connectToXServer]) return NO;
 
     _running = YES;
-    __block ApplicationServer *blockSelf = self;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        self.refreshTimer = [NSTimer scheduledTimerWithTimeInterval:1.0/60.0 repeats:YES block:^(NSTimer * _Nonnull timer) {
-            [blockSelf retain];
-            [blockSelf.focusSocket handleIncomingData];
-            NSMutableArray *toRemove = [NSMutableArray array];
-            for (NSNumber *windowId in [blockSelf windows]) {
-                xcb_window_t xWin = (xcb_window_t)[windowId unsignedIntValue];
-                xcb_get_window_attributes_cookie_t attr_cookie = xcb_get_window_attributes((xcb_connection_t *)[blockSelf connection], xWin);
-                xcb_get_window_attributes_reply_t *attr = xcb_get_window_attributes_reply((xcb_connection_t *)[blockSelf connection], attr_cookie, NULL);
-                if (!attr || attr->map_state == XCB_MAP_STATE_UNMAPPED) {
-                    [toRemove addObject:windowId];
-                    if (attr) free(attr);
-                    continue;
-                }
-                free(attr);
-
-                xcb_intern_atom_cookie_t pid_atom_cookie = xcb_intern_atom((xcb_connection_t *)[blockSelf connection], 0, 11, "_NET_WM_PID");
-                xcb_intern_atom_reply_t *pid_atom_reply = xcb_intern_atom_reply((xcb_connection_t *)[blockSelf connection], pid_atom_cookie, NULL);
-                if (pid_atom_reply) {
-                    xcb_get_property_cookie_t prop_cookie = xcb_get_property((xcb_connection_t *)[blockSelf connection], 0, xWin, pid_atom_reply->atom, XCB_ATOM_CARDINAL, 0, 1);
-                    xcb_get_property_reply_t *prop_reply = xcb_get_property_reply((xcb_connection_t *)[blockSelf connection], prop_cookie, NULL);
-                    if (prop_reply && prop_reply->format == 32 && xcb_get_property_value_length(prop_reply) >= 4) {
-                        pid_t owner_pid = *(pid_t *)xcb_get_property_value(prop_reply);
-                        if (kill(owner_pid, 0) == -1 && errno == ESRCH) [toRemove addObject:windowId];
-                    }
-                    if (prop_reply) free(prop_reply);
-                    free(pid_atom_reply);
-                }
-
-                if (![toRemove containsObject:windowId]) [blockSelf captureAndDisplayWindow:xWin];
-            }
-            for (NSNumber *windowId in toRemove) [blockSelf closeCocoaWindowForXWindow:(xcb_window_t)[windowId unsignedIntValue]];
-            [blockSelf release];
-        }];
-        [[NSRunLoop mainRunLoop] addTimer:self.refreshTimer forMode:NSRunLoopCommonModes];
-    });
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         while (self.running) {
@@ -155,12 +173,39 @@ static const char *FOCUS_SOCKET_PATH = "/tmp/applicator_focus.sock";
         case XCB_DESTROY_NOTIFY: dispatch_async(dispatch_get_main_queue(), ^{ [self closeCocoaWindowForXWindow:((xcb_destroy_notify_event_t *)event)->window]; }); break;
         case XCB_CONFIGURE_NOTIFY: [self handleConfigureNotify:(xcb_configure_notify_event_t *)event]; break;
         case XCB_EXPOSE: dispatch_async(dispatch_get_main_queue(), ^{ if (self.windows[@(((xcb_expose_event_t *)event)->window)]) [self captureAndDisplayWindow:((xcb_expose_event_t *)event)->window]; }); break;
+        default:
+            if (self.damageAvailable && type == (uint8_t)(self.damageEventBase + XCB_DAMAGE_NOTIFY)) {
+                [self handleDamageNotify:(xcb_damage_notify_event_t *)event];
+            }
+            break;
     }
+}
+
+- (void)handleDamageNotify:(xcb_damage_notify_event_t *)event {
+    if (event == NULL) {
+        return;
+    }
+
+    [self captureAndDisplayWindow:(xcb_window_t)event->drawable];
 }
 
 - (void)captureAndDisplayWindow:(xcb_window_t)xWindow {
     [self retain];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        xcb_damage_damage_t damageId = 0;
+        if (self.damageAvailable) {
+            @synchronized (self) {
+                NSNumber *damageKey = [self.damageWindows objectForKey:@(xWindow)];
+                if (damageKey) {
+                    damageId = (xcb_damage_damage_t)[damageKey unsignedIntValue];
+                }
+            }
+            if (damageId != 0) {
+                xcb_damage_subtract(self.connection, damageId, XCB_XFIXES_REGION_NONE, XCB_XFIXES_REGION_NONE);
+                xcb_flush(self.connection);
+            }
+        }
+
         xcb_get_geometry_reply_t *geom = xcb_get_geometry_reply(self.connection, xcb_get_geometry(self.connection, xWindow), NULL);
         if (!geom) { [self release]; return; }
         xcb_get_image_reply_t *reply = xcb_get_image_reply(self.connection, xcb_get_image(self.connection, XCB_IMAGE_FORMAT_Z_PIXMAP, xWindow, 0, 0, geom->width, geom->height, UINT32_MAX), NULL);
@@ -228,6 +273,7 @@ static const char *FOCUS_SOCKET_PATH = "/tmp/applicator_focus.sock";
         if (geom) { [cocoaWindow setFrame:NSMakeRect(100, 100, geom->width, geom->height) display:YES]; free(geom); }
 
         self.windows[@(window)] = cocoaWindow; [cocoaWindow makeKeyAndOrderFront:nil];
+        [self registerDamageForWindow:window];
         [self captureAndDisplayWindow:window]; [self.focusSocket updateFocusWithWindow:window nativeWindowId:0 cid:cid];
         xcb_configure_window(_connection, window, XCB_CONFIG_WINDOW_BORDER_WIDTH, (uint32_t[]){0}); xcb_map_window(_connection, window);
         [self release];
@@ -278,13 +324,14 @@ static const char *FOCUS_SOCKET_PATH = "/tmp/applicator_focus.sock";
 }
 
 - (void)stop {
-    _running = NO; [self.refreshTimer invalidate]; self.refreshTimer = nil;
+    _running = NO;
+    [self.damageWindows removeAllObjects];
     if (_connection) { xcb_disconnect(_connection); _connection = NULL; }
     [self.focusSocket stop]; [self.xorg stop];
 }
 
 - (void)dealloc {
-    [self stop]; [_windows release]; [_imageViews release]; [_xorg release]; [_focusSocket release]; [super dealloc];
+    [self stop]; [_windows release]; [_imageViews release]; [_damageWindows release]; [_xorg release]; [_focusSocket release]; [super dealloc];
 }
 
 @end
