@@ -10,6 +10,7 @@
 #import "XClientView.h"
 #import "XorgServer.h"
 #import "FocusSocket.h"
+#import "lua_config.h"
 
 static const char *FOCUS_SOCKET_PATH = "/tmp/applicator_focus.sock";
 
@@ -345,14 +346,18 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
-        NSString *dylibPath = [[NSString stringWithUTF8String:info.dli_fname] stringByDeletingLastPathComponent];
-        dylibPath = [dylibPath stringByAppendingPathComponent:@"libAppLaunchRunner.dylib"];
+        NSString *runtimeDir = [[NSString stringWithUTF8String:info.dli_fname] stringByDeletingLastPathComponent];
+        NSString *dylibPath = [runtimeDir stringByAppendingPathComponent:@"libAppLaunchRunner.dylib"];
 
         void *handle = dlopen([dylibPath UTF8String], RTLD_NOW);
         if (!handle) {
             NSLog(@"Failed to load %@: %s", dylibPath, dlerror());
         } else {
             NSLog(@"Loaded AppLaunchRunner dylib from %@", dylibPath);
+            NSString *serverLuaPath = [runtimeDir stringByAppendingPathComponent:@"server.lua"];
+            if (!applicator_lua_config_load_server([serverLuaPath UTF8String], "[ApplicationServer]")) {
+                NSLog(@"Warning: failed to execute server.lua at %@", serverLuaPath);
+            }
         }
 
         NSApplication *app = [NSApplication sharedApplication];

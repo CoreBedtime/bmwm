@@ -1,4 +1,5 @@
 #import "ModFontPatch.h"
+#import "lua_config.h"
 #import <CoreFoundation/CoreFoundation.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <CoreText/CoreText.h>
@@ -6,11 +7,14 @@
 #import <fontconfig/fontconfig.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <dlfcn.h>
+#include <limits.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <string.h>
 
 static CTFontRef (*originalCTFontCreateWithFontDescriptor)(CTFontDescriptorRef descriptor,
                                                            CGFloat size,
@@ -25,12 +29,72 @@ static CGFontRef replacementCGFont = NULL;
 static bool fontHookInstalled = false;
 static pthread_once_t fontConfigOnce = PTHREAD_ONCE_INIT;
 static pthread_once_t replacementFontOnce = PTHREAD_ONCE_INIT;
-static const char *replacementFontPath = "/Users/bedtime/Library/Fonts/ComicShannsMonoNerdFontMono-Regular.otf";
-static const char *replacementFontFamily = "ComicShannsMono Nerd Font Mono";
+static pthread_once_t replacementSettingsOnce = PTHREAD_ONCE_INIT;
+static char replacementFontPath[PATH_MAX];
+static char replacementFontFamily[PATH_MAX];
+static const char *defaultReplacementFontPath = "/Users/bedtime/Library/Fonts/ComicShannsMonoNerdFontMono-Regular.otf";
+static const char *defaultReplacementFontFamily = "ComicShannsMono Nerd Font Mono";
 static const char *fontConfigDirPath = "/tmp/applicator-fontconfig";
 static const char *fontConfigFilePath = "/tmp/applicator-fontconfig/fonts.conf";
+static const char *gtkSettingsDirPath = "/tmp/applicator-gtk/gtk-3.0";
+static const char *gtkSettingsFilePath = "/tmp/applicator-gtk/gtk-3.0/settings.ini";
+
+void ModFontPatchInit(void);
+
+static bool ModFontPatchResolveScriptPath(const char *scriptName, char *buffer, size_t bufferSize) {
+    Dl_info info;
+    char dir[PATH_MAX];
+    char *slash = NULL;
+    int written = 0;
+
+    if (buffer == NULL || bufferSize == 0 || scriptName == NULL || *scriptName == '\0') {
+        return false;
+    }
+
+    if (dladdr((void *)ModFontPatchInit, &info) == 0 || info.dli_fname == NULL) {
+        return false;
+    }
+
+    written = snprintf(dir, sizeof(dir), "%s", info.dli_fname);
+    if (written < 0 || (size_t)written >= sizeof(dir)) {
+        return false;
+    }
+
+    slash = strrchr(dir, '/');
+    if (slash == NULL) {
+        return false;
+    }
+    *slash = '\0';
+
+    written = snprintf(buffer, bufferSize, "%s/%s", dir, scriptName);
+    return written >= 0 && (size_t)written < bufferSize;
+}
+
+static void ModFontPatchLoadConfiguredSettingsOnce(void) {
+    const char *fontPath = getenv(APPLICATOR_LUA_FONT_FILE_ENV);
+    const char *fontFamily = getenv(APPLICATOR_LUA_FONT_FAMILY_ENV);
+
+    snprintf(replacementFontPath,
+             sizeof(replacementFontPath),
+             "%s",
+             (fontPath != NULL && fontPath[0] != '\0') ? fontPath : defaultReplacementFontPath);
+    snprintf(replacementFontFamily,
+             sizeof(replacementFontFamily),
+             "%s",
+             (fontFamily != NULL && fontFamily[0] != '\0') ? fontFamily : defaultReplacementFontFamily);
+}
+
+static void ModFontPatchLoadConfiguredSettings(void) {
+    pthread_once(&replacementSettingsOnce, ModFontPatchLoadConfiguredSettingsOnce);
+}
 
 static void ModFontPatchInstallFontConfigOnce(void) {
+    setenv("FONTCONFIG_FILE", fontConfigFilePath, 1);
+    setenv("FONTCONFIG_PATH", fontConfigDirPath, 1);
+    setenv("XDG_CONFIG_HOME", "/tmp/applicator-gtk", 1);
+
+    ModFontPatchLoadConfiguredSettings();
+
     if (mkdir(fontConfigDirPath, 0755) != 0 && errno != EEXIST) {
         return;
     }
@@ -101,9 +165,6 @@ static void ModFontPatchInstallFontConfigOnce(void) {
         return;
     }
 
-    setenv("FONTCONFIG_FILE", fontConfigFilePath, 1);
-    setenv("FONTCONFIG_PATH", fontConfigDirPath, 1);
-
     if (FcInitReinitialize() == FcFalse) {
         FcInit();
     }
@@ -112,6 +173,17 @@ static void ModFontPatchInstallFontConfigOnce(void) {
     if (config != NULL) {
         FcConfigAppFontAddFile(config, (const FcChar8 *)replacementFontPath);
         FcConfigBuildFonts(config);
+    }
+
+    // Update GTK settings as well
+    if (mkdir("/tmp/applicator-gtk", 0755) == 0 || errno == EEXIST) {
+        if (mkdir(gtkSettingsDirPath, 0755) == 0 || errno == EEXIST) {
+            FILE *gtkFile = fopen(gtkSettingsFilePath, "w");
+            if (gtkFile) {
+                fprintf(gtkFile, "[Settings]\ngtk-font-name=%s 12\n", replacementFontFamily);
+                fclose(gtkFile);
+            }
+        }
     }
 }
 
@@ -137,6 +209,8 @@ static CGFloat ModFontPatchResolvePointSize(CTFontDescriptorRef descriptor, CGFl
 }
 
 static void ModFontPatchLoadReplacementFontOnce(void) {
+    ModFontPatchLoadConfiguredSettings();
+
     CFStringRef fontPathString = CFStringCreateWithCString(
         kCFAllocatorDefault,
         replacementFontPath,
@@ -229,6 +303,13 @@ static CTFontRef ModFontPatch_CTFontCreateUIFontForLanguage(CTFontUIFontType uiT
 void ModFontPatchInit(void) {
     if (fontHookInstalled) {
         return;
+    }
+
+    char patchesLuaPath[PATH_MAX];
+    if (ModFontPatchResolveScriptPath("patches.lua", patchesLuaPath, sizeof(patchesLuaPath))) {
+        applicator_lua_config_load_patches(patchesLuaPath, "[ModFontPatch]");
+    } else {
+        fprintf(stderr, "[ModFontPatch] warning: could not resolve patches.lua next to the helper library\n");
     }
 
     ModFontPatchInstallFontConfig();

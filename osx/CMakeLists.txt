@@ -165,6 +165,35 @@ target_link_libraries(ApplicatorConfig PUBLIC
     "${LUAJIT_LIBRARY}"
 )
 
+set(APPLICATOR_LUA_PATCHES_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/Config/patches.lua")
+set(APPLICATOR_LUA_SERVER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/Config/server.lua")
+set(APPLICATOR_LUA_PATCHES_BINARY "${CMAKE_CURRENT_BINARY_DIR}/patches.lua")
+set(APPLICATOR_LUA_SERVER_BINARY "${CMAKE_CURRENT_BINARY_DIR}/server.lua")
+
+add_custom_command(
+    OUTPUT "${APPLICATOR_LUA_PATCHES_BINARY}"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${APPLICATOR_LUA_PATCHES_SOURCE}"
+            "${APPLICATOR_LUA_PATCHES_BINARY}"
+    DEPENDS "${APPLICATOR_LUA_PATCHES_SOURCE}"
+    VERBATIM
+)
+
+add_custom_command(
+    OUTPUT "${APPLICATOR_LUA_SERVER_BINARY}"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${APPLICATOR_LUA_SERVER_SOURCE}"
+            "${APPLICATOR_LUA_SERVER_BINARY}"
+    DEPENDS "${APPLICATOR_LUA_SERVER_SOURCE}"
+    VERBATIM
+)
+
+add_custom_target(ApplicatorLuaScripts ALL
+    DEPENDS
+        "${APPLICATOR_LUA_PATCHES_BINARY}"
+        "${APPLICATOR_LUA_SERVER_BINARY}"
+)
+
 find_program(FRIDA_COMPILE_EXECUTABLE
     NAMES frida-compile
     HINTS /Library/Frameworks/Python.framework/Versions/3.10/bin
@@ -278,6 +307,8 @@ target_link_libraries(ApplicationServer PRIVATE
     "${APPKIT_FRAMEWORK}"
 )
 
+add_dependencies(ApplicationServer ApplicatorLuaScripts)
+
 add_library(AppLaunchRunner SHARED
     AppLaunch/AppLaunchRunner.m
     AppLaunch/Mod/ModFontPatch.m
@@ -294,6 +325,7 @@ target_link_libraries(AppLaunchRunner PRIVATE
     "${CORETEXT_FRAMEWORK}"
     "${COREGRAPHICS_FRAMEWORK}"
     "${FONTCONFIG_LIBRARY}"
+    ApplicatorConfig
     dobby_static
     c++
 )
@@ -301,6 +333,8 @@ target_link_libraries(AppLaunchRunner PRIVATE
 target_include_directories(AppLaunchRunner PRIVATE
     "${FONTCONFIG_INCLUDE_DIR}"
 )
+
+add_dependencies(AppLaunchRunner ApplicatorLuaScripts)
 
 set_target_properties(AppLaunchRunner PROPERTIES OUTPUT_NAME "AppLaunchRunner")
 
