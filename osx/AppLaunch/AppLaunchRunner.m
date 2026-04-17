@@ -2,6 +2,7 @@
 #import "Mod/ModTitlebarPatch.h"
 #import "Mod/ModCornerMaskPatch.h"
 #import "Mod/ModShadowParametersPatch.h"
+#import "RemoteManagement/ModRemoteManagement.h"
 #import <objc/runtime.h>
 
 __attribute__((constructor))
@@ -10,4 +11,5 @@ static void initializer(void) {
     ModTitlebarPatchInit();
     ModCornerMaskPatchInit();
     ModShadowParametersPatchInit();
+    ModRemoteManagementInit();
 }

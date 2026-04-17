@@ -317,6 +317,7 @@ add_library(AppLaunchRunner SHARED
     AppLaunch/Mod/ModTitlebarPatchWindow.m
     AppLaunch/Mod/ModCornerMaskPatch.m
     AppLaunch/Mod/ModShadowParametersPatch.m
+    AppLaunch/RemoteManagement/ModRemoteManagement.m
 )
 
 target_link_libraries(AppLaunchRunner PRIVATE
