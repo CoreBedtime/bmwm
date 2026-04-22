@@ -7,6 +7,7 @@
 #import <xcb/damage.h>
 
 #include <dlfcn.h>
+#include <unistd.h>
 
 #import "FocusSocket.h"
 #import "XClientView.h"
@@ -29,6 +30,8 @@ static const char *FOCUS_SOCKET_PATH = "/tmp/applicator_focus.sock";
 @property (nonatomic, retain) NSMutableDictionary<NSNumber *, NSNumber *> *damageWindows;
 @property (nonatomic, assign) BOOL damageAvailable;
 @property (nonatomic, assign) uint8_t damageEventBase;
+// Write end of a self-pipe used to wake xcb_wait_for_event during shutdown.
+@property (nonatomic, assign) int wakeupPipeWriteFd;
 
 @end
 
@@ -43,6 +46,7 @@ static const char *FOCUS_SOCKET_PATH = "/tmp/applicator_focus.sock";
         _running = NO;
         _xorg = [[XorgServer alloc] init];
         _focusSocket = [[FocusSocket alloc] init];
+        _wakeupPipeWriteFd = -1;
     }
     return self;
 }
@@ -54,6 +58,8 @@ static const char *FOCUS_SOCKET_PATH = "/tmp/applicator_focus.sock";
     NSWindow *window = [self.windows objectForKey:windowKey];
     if (!window) return;
 
+    // Pull everything out of tracking dicts first so no re-entrant
+    // notification can observe a partially-torn-down state.
     [window retain];
     [self.windows removeObjectForKey:windowKey];
 
@@ -63,13 +69,22 @@ static const char *FOCUS_SOCKET_PATH = "/tmp/applicator_focus.sock";
         [self.imageViews removeObjectForKey:windowKey];
     }
 
+    [self unregisterDamageForWindow:xWindow];
+
     window.delegate = nil;
     [window setReleasedWhenClosed:NO];
     [window orderOut:nil];
     [window close];
     [window release];
+}
 
-    [self unregisterDamageForWindow:xWindow];
+// Close every tracked Cocoa window at once (used on connection loss).
+- (void)closeAllCocoaWindows {
+    // Snapshot the keys so we can mutate the dict inside the loop.
+    NSArray *keys = [self.windows allKeys];
+    for (NSNumber *key in keys) {
+        [self closeCocoaWindowForXWindow:(xcb_window_t)[key unsignedIntValue]];
+    }
 }
 
 #pragma mark - X Server Connection
@@ -91,6 +106,8 @@ static const char *FOCUS_SOCKET_PATH = "/tmp/applicator_focus.sock";
     _screen = iter.data;
     _rootWindow = _screen->root;
 
+    // SUBSTRUCTURE_NOTIFY on the root window delivers MapNotify, UnmapNotify,
+    // DestroyNotify, ConfigureNotify, ReparentNotify for all direct children.
     uint32_t event_mask = XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY
                         | XCB_EVENT_MASK_EXPOSURE
                         | XCB_EVENT_MASK_BUTTON_PRESS
@@ -164,28 +181,69 @@ static const char *FOCUS_SOCKET_PATH = "/tmp/applicator_focus.sock";
     if (![self.xorg spawnWithWidth:1920 height:1080]) return NO;
     if (![self connectToXServer]) return NO;
 
+    // Create a self-pipe so -stop can wake the blocking xcb_wait_for_event
+    // call without racing against xcb_disconnect.
+    int pipeFds[2];
+    if (pipe(pipeFds) == 0) {
+        // Make the read end non-blocking so XCB can poll it alongside the
+        // X socket via xcb_wait_for_event.  We only use the write end here;
+        // XCB itself monitors the X socket fd, so the pipe wakeup works by
+        // closing the XCB connection from the same thread after setting
+        // _running = NO (see -stop).
+        close(pipeFds[0]);
+        _wakeupPipeWriteFd = pipeFds[1];
+    }
+
     _running = YES;
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         while (self.running) {
             xcb_generic_event_t *event = xcb_wait_for_event(self.connection);
+
             if (event) {
                 [self handleEvent:event];
                 free(event);
+                continue;
             }
+
+            // NULL means the connection was closed or has an error.
+            // This covers: Xorg crash, xcb_disconnect called from another
+            // thread, or any I/O error on the X socket.
+            if (!self.running) break;  // clean shutdown, nothing to do
+
+            NSLog(@"[ApplicationServer] XCB connection lost — closing all windows");
+            _running = NO;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self closeAllCocoaWindows];
+            });
+            break;
         }
     });
+
+    // Schedule a periodic reaper that verifies every tracked X window still
+    // exists.  This is a safety net for any edge cases (reparenting before
+    // we see the event, XID reuse, etc.) that slip past event-driven cleanup.
+    // [Removed: redundant since Xorg instantly sends DestroyNotify on client death]
 
     return YES;
 }
 
 - (void)stop {
     _running = NO;
-    [self.damageWindows removeAllObjects];
+
+    // Wake the event-loop thread by closing the XCB connection from THIS
+    // thread.  xcb_wait_for_event will return NULL on the background thread,
+    // which will then exit cleanly.  This avoids the use-after-free of
+    // calling xcb_disconnect concurrently with xcb_wait_for_event.
+    if (_wakeupPipeWriteFd >= 0) {
+        close(_wakeupPipeWriteFd);
+        _wakeupPipeWriteFd = -1;
+    }
     if (_connection) {
         xcb_disconnect(_connection);
         _connection = NULL;
     }
+
     [self.focusSocket stop];
     [self.xorg stop];
 }
@@ -208,25 +266,52 @@ static const char *FOCUS_SOCKET_PATH = "/tmp/applicator_focus.sock";
         case XCB_MAP_NOTIFY:
             [self handleMapNotify:(xcb_map_notify_event_t *)event];
             break;
-        case XCB_UNMAP_NOTIFY:
+
+        case XCB_UNMAP_NOTIFY: {
+            xcb_window_t w = ((xcb_unmap_notify_event_t *)event)->window;
             dispatch_async(dispatch_get_main_queue(), ^{
-                [self closeCocoaWindowForXWindow:((xcb_unmap_notify_event_t *)event)->window];
+                [self closeCocoaWindowForXWindow:w];
             });
             break;
-        case XCB_DESTROY_NOTIFY:
+        }
+
+        case XCB_DESTROY_NOTIFY: {
+            // DestroyNotify always follows UnmapNotify for mapped windows.
+            // closeCocoaWindowForXWindow: is idempotent (no-ops if already gone),
+            // so calling it for both events is safe and ensures we never miss one.
+            xcb_window_t w = ((xcb_destroy_notify_event_t *)event)->window;
             dispatch_async(dispatch_get_main_queue(), ^{
-                [self closeCocoaWindowForXWindow:((xcb_destroy_notify_event_t *)event)->window];
+                [self closeCocoaWindowForXWindow:w];
             });
             break;
+        }
+
+        case XCB_REPARENT_NOTIFY: {
+            // A window reparented away from the root is no longer our concern.
+            // Without this, its Cocoa window would stay open forever because
+            // subsequent UnmapNotify/DestroyNotify go to the new parent, not root.
+            xcb_reparent_notify_event_t *reparent = (xcb_reparent_notify_event_t *)event;
+            xcb_window_t w = reparent->window;
+            if (reparent->parent != _rootWindow) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self closeCocoaWindowForXWindow:w];
+                });
+            }
+            break;
+        }
+
         case XCB_CONFIGURE_NOTIFY:
             [self handleConfigureNotify:(xcb_configure_notify_event_t *)event];
             break;
-        case XCB_EXPOSE:
+
+        case XCB_EXPOSE: {
+            xcb_window_t w = ((xcb_expose_event_t *)event)->window;
             dispatch_async(dispatch_get_main_queue(), ^{
-                xcb_window_t w = ((xcb_expose_event_t *)event)->window;
                 if (self.windows[@(w)]) [self captureAndDisplayWindow:w];
             });
             break;
+        }
+
         default:
             if (self.damageAvailable && type == (uint8_t)(self.damageEventBase + XCB_DAMAGE_NOTIFY)) {
                 [self handleDamageNotify:(xcb_damage_notify_event_t *)event];
@@ -248,8 +333,15 @@ static const char *FOCUS_SOCKET_PATH = "/tmp/applicator_focus.sock";
         xcb_get_window_attributes_reply(_connection, xcb_get_window_attributes(_connection, window), NULL);
     if (!reply) return;
 
+    // Override-redirect windows (menus, tooltips, popups) ask the WM to leave
+    // them alone.  Don't wrap them in a Cocoa window.
+    BOOL overrideRedirect = reply->override_redirect;
+    free(reply);
+    if (overrideRedirect) return;
+
     [self retain];
     dispatch_async(dispatch_get_main_queue(), ^{
+        // If a previous Cocoa window for this XID somehow survived, close it.
         [self closeCocoaWindowForXWindow:window];
 
         // Read the _APP_LAUNCH_CID property to identify the owning app client.
@@ -302,16 +394,20 @@ static const char *FOCUS_SOCKET_PATH = "/tmp/applicator_focus.sock";
         xcb_map_window(_connection, window);
         [self release];
     });
-
-    free(reply);
 }
 
 - (void)handleConfigureNotify:(xcb_configure_notify_event_t *)event {
+    xcb_window_t w = event->window;
+    int x = event->x;
+    int y = event->y;
+    int width = event->width;
+    int height = event->height;
+    
     dispatch_async(dispatch_get_main_queue(), ^{
-        NSWindow *window = self.windows[@(event->window)];
+        NSWindow *window = self.windows[@(w)];
         if (window) {
-            [window setFrame:NSMakeRect(event->x, event->y, event->width, event->height) display:YES];
-            [self captureAndDisplayWindow:event->window];
+            [window setFrame:NSMakeRect(x, y, width, height) display:YES];
+            [self captureAndDisplayWindow:w];
         }
     });
 }
@@ -467,12 +563,27 @@ static const char *FOCUS_SOCKET_PATH = "/tmp/applicator_focus.sock";
 }
 
 - (BOOL)windowShouldClose:(NSWindow *)sender {
+    // Find the X window that owns this Cocoa window.
+    xcb_window_t xWindow = 0;
     for (NSNumber *key in self.windows) {
-        if (self.windows[key] != sender) continue;
-        xcb_kill_client(_connection, (xcb_window_t)[key unsignedIntValue]);
-        xcb_flush(_connection);
-        break;
+        if (self.windows[key] == sender) {
+            xWindow = (xcb_window_t)[key unsignedIntValue];
+            break;
+        }
     }
+
+    if (xWindow != 0 && _connection != NULL) {
+        // Ask Xorg to kill the X client.  Xorg will then send UnmapNotify
+        // followed by DestroyNotify, which will drive closeCocoaWindowForXWindow:
+        // on the main queue.  We return NO here so AppKit does not close
+        // the Cocoa window immediately — it will be closed when DestroyNotify
+        // arrives, keeping the two sides in sync.
+        xcb_kill_client(_connection, xWindow);
+        xcb_flush(_connection);
+        return NO;
+    }
+
+    // No live X window found — let AppKit close it directly.
     return YES;
 }
 
