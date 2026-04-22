@@ -1,14 +1,15 @@
 #import "XorgServer.h"
-#include <unistd.h>
+
+#include <errno.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
-#include <fcntl.h>
-#include <errno.h>
+#include <unistd.h>
 
 static const char *xorg_paths[] = {
-    "/opt/local/bin/Xorg",
-    "/opt/X11/bin/Xorg",
+    "/opt/local/bin/Xorg",   // MacPorts
+    "/opt/X11/bin/Xorg",     // XQuartz
     NULL
 };
 
@@ -23,6 +24,8 @@ static const char *xorg_paths[] = {
     return self;
 }
 
+#pragma mark - Xorg Discovery
+
 - (const char *)findXorg {
     for (int i = 0; xorg_paths[i] != NULL; i++) {
         if (access(xorg_paths[i], X_OK) == 0) {
@@ -32,18 +35,18 @@ static const char *xorg_paths[] = {
     return NULL;
 }
 
+#pragma mark - Config Generation
+
 - (int)writeXorgConfigWithWidth:(int)width height:(int)height {
     char config_template[] = "/tmp/applicator-xorg-XXXXXX";
     int config_fd = mkstemp(config_template);
     if (config_fd < 0) return -1;
 
     _configPath = [NSString stringWithUTF8String:config_template];
+
     char log_path[256];
     snprintf(log_path, sizeof(log_path), "/tmp/applicator-xorg-%ld.log", (long)getpid());
     _logPath = [[NSString stringWithUTF8String:log_path] retain];
-
-    char mode_name[] = "Mode0";
-    char modeline[] = "173.00 1920 2048 2248 2576 1080 1083 1088 1120 -hsync +vsync";
 
     FILE *config = fdopen(config_fd, "w");
     if (!config) {
@@ -51,47 +54,51 @@ static const char *xorg_paths[] = {
         return -1;
     }
 
+    // Mode name and modeline are fixed; the virtual size comes from the arguments.
+    const char *mode_name = "Mode0";
+    const char *modeline  = "173.00 1920 2048 2248 2576 1080 1083 1088 1120 -hsync +vsync";
+
     fprintf(config,
         "Section \"ServerLayout\"\n"
         "    Identifier \"Layout0\"\n"
-        "    Screen \"Screen0\"\n"
-        "    InputDevice \"Mouse0\" \"CorePointer\"\n"
+        "    Screen     \"Screen0\"\n"
+        "    InputDevice \"Mouse0\"    \"CorePointer\"\n"
         "    InputDevice \"Keyboard0\" \"CoreKeyboard\"\n"
         "EndSection\n"
         "\n"
         "Section \"InputDevice\"\n"
         "    Identifier \"Mouse0\"\n"
-        "    Driver \"void\"\n"
+        "    Driver     \"void\"\n"
         "EndSection\n"
         "\n"
         "Section \"InputDevice\"\n"
         "    Identifier \"Keyboard0\"\n"
-        "    Driver \"void\"\n"
+        "    Driver     \"void\"\n"
         "EndSection\n"
         "\n"
         "Section \"Monitor\"\n"
-        "    Identifier \"Monitor0\"\n"
-        "    HorizSync 1.0-300.0\n"
+        "    Identifier  \"Monitor0\"\n"
+        "    HorizSync   1.0-300.0\n"
         "    VertRefresh 1.0-300.0\n"
         "    Modeline \"%s\" %s\n"
         "EndSection\n"
         "\n"
         "Section \"Device\"\n"
         "    Identifier \"DummyDevice\"\n"
-        "    Driver \"dummy\"\n"
-        "    VideoRam 512000\n"
+        "    Driver     \"dummy\"\n"
+        "    VideoRam   512000\n"
         "    Option \"Shadow\" \"no\"\n"
         "EndSection\n"
         "\n"
         "Section \"Screen\"\n"
         "    Identifier \"Screen0\"\n"
-        "    Device \"DummyDevice\"\n"
-        "    Monitor \"Monitor0\"\n"
+        "    Device     \"DummyDevice\"\n"
+        "    Monitor    \"Monitor0\"\n"
         "    DefaultDepth 24\n"
         "    SubSection \"Display\"\n"
-        "        Depth 24\n"
-        "        Modes \"%s\"\n"
-        "        Virtual %d %d\n"
+        "        Depth    24\n"
+        "        Modes    \"%s\"\n"
+        "        Virtual  %d %d\n"
         "        ViewPort 0 0\n"
         "    EndSubSection\n"
         "EndSection\n",
@@ -100,6 +107,8 @@ static const char *xorg_paths[] = {
     fclose(config);
     return 0;
 }
+
+#pragma mark - Display FD Wait
 
 - (int)waitForDisplayFd:(int)fd displayNumber:(int *)displayNumber {
     char buffer[64] = {0};
@@ -118,6 +127,8 @@ static const char *xorg_paths[] = {
     *displayNumber = (int)display;
     return 0;
 }
+
+#pragma mark - Spawn / Stop
 
 - (BOOL)spawnWithWidth:(int)width height:(int)height {
     const char *xorg = [self findXorg];
@@ -139,6 +150,7 @@ static const char *xorg_paths[] = {
     }
 
     if (pid == 0) {
+        // Child: wire the write end of the pipe to fd 99, redirect stdio to /dev/null.
         close(display_pipe[0]);
         dup2(display_pipe[1], 99);
         close(display_pipe[1]);
@@ -151,11 +163,21 @@ static const char *xorg_paths[] = {
             if (devnull > STDERR_FILENO) close(devnull);
         }
 
-        char *argv[] = { (char *)xorg, (char *)"-quiet", (char *)"-config", (char *)[_configPath UTF8String], (char *)"-noreset", (char *)"-logfile", (char *)[_logPath UTF8String], (char *)"-displayfd", (char *)"99", (char *)"-listen", (char *)"local", NULL };
+        char *argv[] = {
+            (char *)xorg,
+            (char *)"-quiet",
+            (char *)"-config",    (char *)[_configPath UTF8String],
+            (char *)"-noreset",
+            (char *)"-logfile",   (char *)[_logPath UTF8String],
+            (char *)"-displayfd", (char *)"99",
+            (char *)"-listen",    (char *)"local",
+            NULL
+        };
         execv(xorg, argv);
         _exit(127);
     }
 
+    // Parent: read the display number from the pipe.
     close(display_pipe[1]);
     int display_num = -1;
     if ([self waitForDisplayFd:display_pipe[0] displayNumber:&display_num] != 0) {

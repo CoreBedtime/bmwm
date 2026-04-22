@@ -1,2 +1,2 @@
 -- Intentionally empty for now.
--- Loaded only by ApplicationServer after patches.lua.
+-- Loaded only by ApplicationServer.

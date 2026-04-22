@@ -1,5 +1,4 @@
 #import "ModFontPatch.h"
-#import "lua_config.h"
 #import <CoreFoundation/CoreFoundation.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <CoreText/CoreText.h>
@@ -41,38 +40,9 @@ static const char *gtkSettingsFilePath = "/tmp/applicator-gtk/gtk-3.0/settings.i
 
 void ModFontPatchInit(void);
 
-static bool ModFontPatchResolveScriptPath(const char *scriptName, char *buffer, size_t bufferSize) {
-    Dl_info info;
-    char dir[PATH_MAX];
-    char *slash = NULL;
-    int written = 0;
-
-    if (buffer == NULL || bufferSize == 0 || scriptName == NULL || *scriptName == '\0') {
-        return false;
-    }
-
-    if (dladdr((void *)ModFontPatchInit, &info) == 0 || info.dli_fname == NULL) {
-        return false;
-    }
-
-    written = snprintf(dir, sizeof(dir), "%s", info.dli_fname);
-    if (written < 0 || (size_t)written >= sizeof(dir)) {
-        return false;
-    }
-
-    slash = strrchr(dir, '/');
-    if (slash == NULL) {
-        return false;
-    }
-    *slash = '\0';
-
-    written = snprintf(buffer, bufferSize, "%s/%s", dir, scriptName);
-    return written >= 0 && (size_t)written < bufferSize;
-}
-
 static void ModFontPatchLoadConfiguredSettingsOnce(void) {
-    const char *fontPath = getenv(APPLICATOR_LUA_FONT_FILE_ENV);
-    const char *fontFamily = getenv(APPLICATOR_LUA_FONT_FAMILY_ENV);
+    const char *fontPath = getenv("APPLICATOR_FONT_FILE");
+    const char *fontFamily = getenv("APPLICATOR_FONT_FAMILY");
 
     snprintf(replacementFontPath,
              sizeof(replacementFontPath),
@@ -303,13 +273,6 @@ static CTFontRef ModFontPatch_CTFontCreateUIFontForLanguage(CTFontUIFontType uiT
 void ModFontPatchInit(void) {
     if (fontHookInstalled) {
         return;
-    }
-
-    char patchesLuaPath[PATH_MAX];
-    if (ModFontPatchResolveScriptPath("patches.lua", patchesLuaPath, sizeof(patchesLuaPath))) {
-        applicator_lua_config_load_patches(patchesLuaPath, "[ModFontPatch]");
-    } else {
-        fprintf(stderr, "[ModFontPatch] warning: could not resolve patches.lua next to the helper library\n");
     }
 
     ModFontPatchInstallFontConfig();

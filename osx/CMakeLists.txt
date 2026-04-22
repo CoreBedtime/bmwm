@@ -3,6 +3,7 @@ find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
 find_library(COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
 find_library(COREGRAPHICS_FRAMEWORK CoreGraphics REQUIRED)
 find_library(CORETEXT_FRAMEWORK CoreText REQUIRED)
+find_library(CVIDEO_FRAMEWORK CoreVideo REQUIRED)
 find_path(FONTCONFIG_INCLUDE_DIR fontconfig/fontconfig.h
     HINTS
         /opt/local/include
@@ -165,33 +166,20 @@ target_link_libraries(ApplicatorConfig PUBLIC
     "${LUAJIT_LIBRARY}"
 )
 
-set(APPLICATOR_LUA_PATCHES_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/Config/patches.lua")
 set(APPLICATOR_LUA_SERVER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/Config/server.lua")
-set(APPLICATOR_LUA_PATCHES_BINARY "${CMAKE_CURRENT_BINARY_DIR}/patches.lua")
 set(APPLICATOR_LUA_SERVER_BINARY "${CMAKE_CURRENT_BINARY_DIR}/server.lua")
 
 add_custom_command(
-    OUTPUT "${APPLICATOR_LUA_PATCHES_BINARY}"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${APPLICATOR_LUA_PATCHES_SOURCE}"
-            "${APPLICATOR_LUA_PATCHES_BINARY}"
-    DEPENDS "${APPLICATOR_LUA_PATCHES_SOURCE}"
-    VERBATIM
-)
-
-add_custom_command(
     OUTPUT "${APPLICATOR_LUA_SERVER_BINARY}"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${APPLICATOR_LUA_SERVER_SOURCE}"
             "${APPLICATOR_LUA_SERVER_BINARY}"
     DEPENDS "${APPLICATOR_LUA_SERVER_SOURCE}"
-    VERBATIM
+    COMMENT "Generating server.lua"
 )
 
 add_custom_target(ApplicatorLuaScripts ALL
-    DEPENDS
-        "${APPLICATOR_LUA_PATCHES_BINARY}"
-        "${APPLICATOR_LUA_SERVER_BINARY}"
+    DEPENDS "${APPLICATOR_LUA_SERVER_BINARY}"
 )
 
 find_program(FRIDA_COMPILE_EXECUTABLE
@@ -274,7 +262,8 @@ find_library(X11_LIBRARY X11 HINTS /opt/local/lib REQUIRED)
 find_library(XCURSOR_LIBRARY Xcursor HINTS /opt/local/lib REQUIRED)
 
 add_executable(ApplicationServer
-    ApplicationServer/application_server.m
+    ApplicationServer/ApplicationServer.m
+    ApplicationServer/WannaTile.m
     ApplicationServer/XClientView.m
     ApplicationServer/XClientWindow.m
     ApplicationServer/XorgServer.m
@@ -301,6 +290,8 @@ target_link_libraries(ApplicationServer PRIVATE
     "${X11_LIBRARY}"
     "${XCURSOR_LIBRARY}"
     "${COREGRAPHICS_FRAMEWORK}"
+    "${CVIDEO_FRAMEWORK}"
+    "${SKYLIGHT_LIBRARY}"
     "${IMAGEIO_FRAMEWORK}"
     "${COREFOUNDATION_FRAMEWORK}"
     "${IOKIT_FRAMEWORK}"
