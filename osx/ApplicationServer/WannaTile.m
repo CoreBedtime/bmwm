@@ -24,7 +24,7 @@ extern CFTypeRef SLSWindowQueryResultCopyWindows(CFTypeRef window_query);
 
 int g_connection = 0;
 
-CFArrayRef CFNumberArray(void *values, size_t size, int count, CFNumberType type) {
+CFArrayRef CFNumberArrayCreate(void *values, size_t size, int count, CFNumberType type) {
     CFNumberRef temp[count];
 
     for (int i = 0; i < count; ++i) {
@@ -54,12 +54,13 @@ Boolean IsWindowSuitable(CFTypeRef iterator) {
     return false;
 }
 
+
 NSArray* GatherWindows(void) {
     NSMutableArray *widList = [[NSMutableArray alloc] init];
 
     uint64_t sid = SLSGetActiveSpace(g_connection);
 
-    CFArrayRef space_list_ref = CFNumberArray(&sid, sizeof(uint64_t), 1, kCFNumberSInt64Type);
+    CFArrayRef space_list_ref = CFNumberArrayCreate(&sid, sizeof(uint64_t), 1, kCFNumberSInt64Type);
 
     uint64_t set_tags = 1;
     uint64_t clear_tags = 0;
@@ -99,6 +100,7 @@ NSArray* GatherWindows(void) {
                     }
                     CFRelease(iterator);
                 }
+
                 CFRelease(query);
             }
         }
@@ -112,9 +114,11 @@ NSArray* GatherWindows(void) {
 
 id ProxyFromDict(NSDictionary *ref, pid_t *outPid, uint32_t *outWid) {
     static NSMutableDictionary<NSNumber *, id> *proxyCache;
+    static NSMutableDictionary<NSNumber *, NSConnection *> *connectionCache;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         proxyCache = [NSMutableDictionary new];
+        connectionCache = [NSMutableDictionary new];
     });
 
     NSNumber *process_id = ref[@"Process"];
@@ -151,72 +155,24 @@ id ProxyFromDict(NSDictionary *ref, pid_t *outPid, uint32_t *outWid) {
 
     if (proxy) {
         proxyCache[pidKey] = proxy;
+        connectionCache[pidKey] = connection; // retain connection for proxy lifetime
     }
 
     return proxy;
 }
 
-CGRect CGRectLerp(CGRect start, CGRect end, double t) {
-    return CGRectMake(
-        start.origin.x + (end.origin.x - start.origin.x) * t,
-        start.origin.y + (end.origin.y - start.origin.y) * t,
-        start.size.width + (end.size.width - start.size.width) * t,
-        start.size.height + (end.size.height - start.size.height) * t
-    );
-}
-
 void CommandWindowTo(NSDictionary *ref, CGRect rectangle) {
     uint32_t _wid;
     id proxy = ProxyFromDict(ref, NULL, &_wid);
-    CGFloat t = 0.15;
 
     @try {
-        SEL getFrameSel = @selector(getFrame:);
-        CGRect (*getFrame)(id, SEL, uint32_t) = (CGRect (*)(id, SEL, uint32_t))objc_msgSend;
-        CGRect currentRect = getFrame(proxy, getFrameSel, _wid);
-
-        NSLog(@"%@", NSStringFromRect(currentRect));
-
-        CGRect nextRect = CGRectLerp(currentRect, rectangle, t);
-
-        [proxy setFrame:_wid rect:nextRect];
-
+        [proxy setFrame:_wid rect:rectangle];
     } @catch (NSException *exception) {
         NSLog(@"IPC call failed: %@", exception);
     }
 }
 
-void TileWindows(NSArray *windows) {
-    if ([windows count] == 0) return;
-
-    CGRect screenFrame = [[NSScreen mainScreen] frame];
-
-    NSUInteger count = [windows count];
-
-    NSUInteger cols = ceil(sqrt(count));
-    NSUInteger rows = ceil((double)count / cols);
-
-    CGFloat tileWidth  = screenFrame.size.width  / cols;
-    CGFloat tileHeight = screenFrame.size.height / rows;
-
-    for (NSUInteger i = 0; i < count; i++) {
-        NSUInteger row = i / cols;
-        NSUInteger col = i % cols;
-
-        CGRect rect = CGRectMake(
-            screenFrame.origin.x + col * tileWidth,
-            screenFrame.origin.y + row * tileHeight,
-            tileWidth,
-            tileHeight
-        );
-
-        CGRect final = CGRectInset(rect, 64, 64);
-
-        CommandWindowTo(windows[i], final);
-    }
-}
-
-void __KAGOME(NSArray *windows) {
+void __WINDOWTILE(NSArray *windows) {
     NSUInteger count = [windows count];
     if (count == 0) return;
 
@@ -293,11 +249,9 @@ CVReturn WindowManagerCallback(CVDisplayLinkRef displayLink,
         g_connection = SLSMainConnectionID();
     }
 
-    ApplicationServer *server = (ApplicationServer *)displayLinkContext;
-
     @autoreleasepool {
         NSArray *windows = GatherWindows();
-        __KAGOME(windows);
+        __WINDOWTILE(windows);
         NSLog(@"%d %@", g_connection, windows);
     }
 
