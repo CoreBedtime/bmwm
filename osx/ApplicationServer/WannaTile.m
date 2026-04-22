@@ -171,9 +171,6 @@ void CommandWindowTo(NSDictionary *ref, CGRect rectangle) {
     CGFloat t = 0.15;
 
     @try {
-        //[proxy setFrame:wid rect:rectangle];
-
-        // 1. Setup the Selector
         SEL getFrameSel = @selector(getFrame:);
         CGRect (*getFrame)(id, SEL, uint32_t) = (CGRect (*)(id, SEL, uint32_t))objc_msgSend;
         CGRect currentRect = getFrame(proxy, getFrameSel, _wid);
@@ -219,6 +216,72 @@ void TileWindows(NSArray *windows) {
     }
 }
 
+void __KAGOME(NSArray *windows) {
+    NSUInteger count = [windows count];
+    if (count == 0) return;
+
+    CGRect screenFrame = [[NSScreen mainScreen] frame];
+
+    // EVEN → GRID LAYOUT
+    if (count % 2 == 0) {
+        NSUInteger cols = ceil(sqrt(count));
+        NSUInteger rows = ceil((double)count / cols);
+
+        CGFloat tileWidth  = screenFrame.size.width  / cols;
+        CGFloat tileHeight = screenFrame.size.height / rows;
+
+        for (NSUInteger i = 0; i < count; i++) {
+            NSUInteger row = i / cols;
+            NSUInteger col = i % cols;
+
+            CGRect rect = CGRectMake(
+                screenFrame.origin.x + col * tileWidth,
+                screenFrame.origin.y + row * tileHeight,
+                tileWidth,
+                tileHeight
+            );
+
+            CGRect final = CGRectInset(rect, 32, 32);
+            CommandWindowTo(windows[i], final);
+        }
+
+        return;
+    }
+
+    // ODD → MASTER + STACK
+    NSUInteger stackCount = count - 1;
+
+    CGFloat masterWidth = screenFrame.size.width * 0.5;
+    CGFloat stackWidth  = screenFrame.size.width - masterWidth;
+
+    CGFloat stackTileHeight = screenFrame.size.height / stackCount;
+
+    // MASTER WINDOW (index 0)
+    CGRect masterRect = CGRectMake(
+        screenFrame.origin.x,
+        screenFrame.origin.y,
+        masterWidth,
+        screenFrame.size.height
+    );
+
+    CommandWindowTo(windows[0], CGRectInset(masterRect, 32, 32));
+
+    // STACK WINDOWS (remaining)
+    for (NSUInteger i = 1; i < count; i++) {
+        NSUInteger stackIndex = i - 1;
+
+        CGRect rect = CGRectMake(
+            screenFrame.origin.x + masterWidth,
+            screenFrame.origin.y + stackIndex * stackTileHeight,
+            stackWidth,
+            stackTileHeight
+        );
+
+        CGRect final = CGRectInset(rect, 32, 32);
+        CommandWindowTo(windows[i], final);
+    }
+}
+
 CVReturn WindowManagerCallback(CVDisplayLinkRef displayLink,
                               const CVTimeStamp* now,
                               const CVTimeStamp* outputTime,
@@ -234,7 +297,7 @@ CVReturn WindowManagerCallback(CVDisplayLinkRef displayLink,
 
     @autoreleasepool {
         NSArray *windows = GatherWindows();
-        TileWindows(windows);
+        __KAGOME(windows);
         NSLog(@"%d %@", g_connection, windows);
     }
 
