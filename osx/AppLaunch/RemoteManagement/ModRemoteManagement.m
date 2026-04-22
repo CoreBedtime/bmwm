@@ -1,8 +1,11 @@
 #import "ModRemoteManagement.h"
+#include <CoreGraphics/CGGeometry.h>
+#include <CoreFoundation/CFCGTypes.h>
 #import <objc/runtime.h>
 
 @interface ModRemoteManagementService : NSObject
 - (void)setFrame:(uint32_t)windowId rect:(CGRect)rectangle;
+- (CGRect)getFrame:(uint32_t)windowId;
 @end
 
 @implementation ModRemoteManagementService
@@ -15,6 +18,19 @@
             }
         }
     });
+}
+
+- (CGRect)getFrame:(uint32_t)windowId {
+    __block CGRect rectangle = CGRectZero;
+
+    for (NSWindow *window in [NSApp windows]) {
+        if ([window windowNumber] == (NSInteger)windowId) {
+            rectangle = [window frame];
+            break; // Optimization: stop looking once found
+        }
+    }
+
+    return rectangle;
 }
 @end
 

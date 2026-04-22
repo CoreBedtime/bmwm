@@ -1,8 +1,9 @@
 #include <CoreFoundation/CFCGTypes.h>
+#include <CoreGraphics/CGGeometry.h>
 #import <CoreVideo/CoreVideo.h>
 #include <Foundation/Foundation.h>
 #include <sys/_types/_pid_t.h>
-#include <MacTypes.h>
+#include <objc/message.h>
 #import "ApplicationServer.h"
 #import <Cocoa/Cocoa.h>
 #include <dlfcn.h>
@@ -109,15 +110,33 @@ NSArray* GatherWindows(void) {
     return [widList autorelease];
 }
 
-void CommandWindowTo(NSDictionary *ref, CGRect rectangle) {
+id ProxyFromDict(NSDictionary *ref, pid_t *outPid, uint32_t *outWid) {
+    static NSMutableDictionary<NSNumber *, id> *proxyCache;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        proxyCache = [NSMutableDictionary new];
+    });
+
     NSNumber *process_id = ref[@"Process"];
     NSNumber *window_id  = ref[@"Window"];
 
-    if (!process_id || !window_id) return;
+    if (!process_id || !window_id) return nil;
 
     pid_t pid = [process_id intValue];
     uint32_t wid = [window_id unsignedIntValue];
 
+    if (outPid) *outPid = pid;
+    if (outWid) *outWid = wid;
+
+    NSNumber *pidKey = @(pid);
+
+    // ---- cache lookup ----
+    id cachedProxy = proxyCache[pidKey];
+    if (cachedProxy) {
+        return cachedProxy;
+    }
+
+    // ---- resolve connection ----
     NSString *connectionName = [NSString stringWithFormat:@"bedtime.wm.%d", pid];
 
     NSConnection *connection =
@@ -125,13 +144,46 @@ void CommandWindowTo(NSDictionary *ref, CGRect rectangle) {
 
     if (!connection) {
         NSLog(@"Failed to connect to %@", connectionName);
-        return;
+        return nil;
     }
 
     id proxy = [connection rootProxy];
 
+    if (proxy) {
+        proxyCache[pidKey] = proxy;
+    }
+
+    return proxy;
+}
+
+CGRect CGRectLerp(CGRect start, CGRect end, double t) {
+    return CGRectMake(
+        start.origin.x + (end.origin.x - start.origin.x) * t,
+        start.origin.y + (end.origin.y - start.origin.y) * t,
+        start.size.width + (end.size.width - start.size.width) * t,
+        start.size.height + (end.size.height - start.size.height) * t
+    );
+}
+
+void CommandWindowTo(NSDictionary *ref, CGRect rectangle) {
+    uint32_t _wid;
+    id proxy = ProxyFromDict(ref, NULL, &_wid);
+    CGFloat t = 0.15;
+
     @try {
-        [proxy setFrame:wid rect:rectangle];
+        //[proxy setFrame:wid rect:rectangle];
+
+        // 1. Setup the Selector
+        SEL getFrameSel = @selector(getFrame:);
+        CGRect (*getFrame)(id, SEL, uint32_t) = (CGRect (*)(id, SEL, uint32_t))objc_msgSend;
+        CGRect currentRect = getFrame(proxy, getFrameSel, _wid);
+
+        NSLog(@"%@", NSStringFromRect(currentRect));
+
+        CGRect nextRect = CGRectLerp(currentRect, rectangle, t);
+
+        [proxy setFrame:_wid rect:nextRect];
+
     } @catch (NSException *exception) {
         NSLog(@"IPC call failed: %@", exception);
     }
@@ -161,7 +213,9 @@ void TileWindows(NSArray *windows) {
             tileHeight
         );
 
-        CommandWindowTo(windows[i], rect);
+        CGRect final = CGRectInset(rect, 64, 64);
+
+        CommandWindowTo(windows[i], final);
     }
 }
 
