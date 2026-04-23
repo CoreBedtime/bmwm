@@ -2,6 +2,8 @@
 #import <objc/runtime.h>
 
 #define NSLog(...)
+static char modTitlebarPatchAppliedKey;
+static char modTitlebarPatchApplyingKey;
 @implementation NSWindow (ModTitlebarPatch)
 
 - (void)modTitlebarPatch_makeKeyAndOrderFront:(id)sender {
@@ -70,13 +72,13 @@
     return isAtTop && spansWidth && hasTitlebarHeight;
 }
 
-- (void)disableTitlebar {
+- (BOOL)disableTitlebar {
     if ([self isInFullscreenTransition]) {
         // NSLog(@"[ModTitlebarPatch] Skipping - in fullscreen transition");
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [self modTitlebarPatch];
         });
-        return;
+        return NO;
     }
 
     if (!self.contentView) {
@@ -84,7 +86,7 @@
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [self modTitlebarPatch];
         });
-        return;
+        return NO;
     }
 
     NSString *className = [self windowClassName];
@@ -97,6 +99,8 @@
     [self hideAllPotentialTitlebars];
     [self hideTitlebarSafely];
     [self setupFullscreenMonitoring];
+
+    return YES;
 }
 
 - (void)handleSwiftUIWindow {
@@ -408,6 +412,7 @@
     container.hidden = YES;
 
     objc_setAssociatedObject(container, originalParentKey, nil, OBJC_ASSOCIATION_RETAIN);
+    objc_setAssociatedObject(self, &modTitlebarPatchAppliedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 - (void)modTitlebarPatch {
@@ -420,7 +425,21 @@
         return;
     }
 
-    [self disableTitlebar];
+    if ([objc_getAssociatedObject(self, &modTitlebarPatchAppliedKey) boolValue]) {
+        return;
+    }
+
+    if ([objc_getAssociatedObject(self, &modTitlebarPatchApplyingKey) boolValue]) {
+        return;
+    }
+
+    objc_setAssociatedObject(self, &modTitlebarPatchApplyingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    BOOL applied = [self disableTitlebar];
+    objc_setAssociatedObject(self, &modTitlebarPatchApplyingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    if (applied) {
+        objc_setAssociatedObject(self, &modTitlebarPatchAppliedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
 }
 
 @end

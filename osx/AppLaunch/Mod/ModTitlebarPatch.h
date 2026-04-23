@@ -18,7 +18,7 @@ void ModTitlebarPatchInit(void);
 - (void)modTitlebarPatch;
 - (NSString *)windowClassName;
 - (BOOL)isInFullscreenTransition;
-- (void)disableTitlebar;
+- (BOOL)disableTitlebar;
 - (void)handleSwiftUIWindow;
 - (void)handleStandardWindow;
 - (void)forceHideSwiftUITitlebars;

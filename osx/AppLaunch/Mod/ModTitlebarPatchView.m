@@ -19,11 +19,6 @@
         NSLog(@"[ModTitlebarPatch] Layout triggered modTitlebarPatch for: %@", typeName);
         [self.window modTitlebarPatch];
     }
-
-    if (self.window) {
-        NSLog(@"[ModTitlebarPatch] Force modTitlebarPatching window: %@", self.window);
-        [self.window modTitlebarPatch];
-    }
 }
 
 - (void)modTitlebarPatch_layoutSubtreeIfNeeded {

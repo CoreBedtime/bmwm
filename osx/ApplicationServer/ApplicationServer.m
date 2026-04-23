@@ -13,7 +13,9 @@
 #import "XClientView.h"
 #import "XClientWindow.h"
 #import "XorgServer.h"
-#import "lua_config.h"
+
+extern BOOL WannaTileLoadServerScript(const char *path, const char *logPrefix);
+extern void WannaTileShutdown(void);
 
 static const char *FOCUS_SOCKET_PATH = "/tmp/applicator_focus.sock";
 
@@ -398,15 +400,19 @@ static const char *FOCUS_SOCKET_PATH = "/tmp/applicator_focus.sock";
 
 - (void)handleConfigureNotify:(xcb_configure_notify_event_t *)event {
     xcb_window_t w = event->window;
-    int x = event->x;
-    int y = event->y;
     int width = event->width;
     int height = event->height;
-    
+
     dispatch_async(dispatch_get_main_queue(), ^{
         NSWindow *window = self.windows[@(w)];
         if (window) {
-            [window setFrame:NSMakeRect(x, y, width, height) display:YES];
+            // Only apply size changes from the X side; position is owned by the
+            // Cocoa window manager (WannaTile). Stomping the origin here is what
+            // caused windows to flicker to the bottom-left during animation.
+            NSRect current = window.frame;
+            if ((int)current.size.width != width || (int)current.size.height != height) {
+                [window setFrame:NSMakeRect(current.origin.x, current.origin.y, width, height) display:YES];
+            }
             [self captureAndDisplayWindow:w];
         }
     });
@@ -616,9 +622,9 @@ int main(int argc, char *argv[]) {
             NSLog(@"Failed to load %@: %s", dylibPath, dlerror());
         } else {
             NSLog(@"Loaded AppLaunchRunner dylib from %@", dylibPath);
-            NSString *serverLuaPath = [runtimeDir stringByAppendingPathComponent:@"server.lua"];
-            if (!applicator_lua_config_load_server([serverLuaPath UTF8String], "[ApplicationServer]")) {
-                NSLog(@"Warning: failed to execute server.lua at %@", serverLuaPath);
+            NSString *serverLuaPath = [[runtimeDir stringByAppendingPathComponent:@"server"] stringByAppendingPathComponent:@"init.lua"];
+            if (!WannaTileLoadServerScript([serverLuaPath UTF8String], "[ApplicationServer]")) {
+                NSLog(@"Warning: failed to execute server init at %@", serverLuaPath);
             }
         }
 
@@ -633,12 +639,20 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
-        CVDisplayLinkRef displayLink;
-        CVDisplayLinkCreateWithActiveCGDisplays(&displayLink);
-        CVDisplayLinkSetOutputCallback(displayLink, WindowManagerCallback, (__bridge void *)server);
-        CVDisplayLinkStart(displayLink);
+        CVDisplayLinkRef displayLink = NULL;
+        if (CVDisplayLinkCreateWithActiveCGDisplays(&displayLink) == kCVReturnSuccess) {
+            CVDisplayLinkSetOutputCallback(displayLink, WindowManagerCallback, (__bridge void *)server);
+            CVDisplayLinkStart(displayLink);
+        } else {
+            NSLog(@"Failed to create display link");
+        }
 
         [app run];
+        if (displayLink != NULL) {
+            CVDisplayLinkStop(displayLink);
+            CFRelease(displayLink);
+        }
+        WannaTileShutdown();
         [server release];
     }
 

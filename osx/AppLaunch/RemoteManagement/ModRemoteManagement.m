@@ -10,24 +10,38 @@
 
 @implementation ModRemoteManagementService
 - (void)setFrame:(uint32_t)windowId rect:(CGRect)rectangle {
-    dispatch_async(dispatch_get_main_queue(), ^{
+    void (^applyFrame)(void) = ^{
         for (NSWindow *window in [NSApp windows]) {
             if ([window windowNumber] == (NSInteger)windowId) {
                 [window setFrame:NSRectFromCGRect(rectangle) display:YES];
                 return;
             }
         }
-    });
+    };
+
+    if ([NSThread isMainThread]) {
+        applyFrame();
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), applyFrame);
+    }
 }
 
 - (CGRect)getFrame:(uint32_t)windowId {
     __block CGRect rectangle = CGRectZero;
 
-    for (NSWindow *window in [NSApp windows]) {
-        if ([window windowNumber] == (NSInteger)windowId) {
-            rectangle = [window frame];
-            break; // Optimization: stop looking once found
+    void (^readFrame)(void) = ^{
+        for (NSWindow *window in [NSApp windows]) {
+            if ([window windowNumber] == (NSInteger)windowId) {
+                rectangle = [window frame];
+                break; // Optimization: stop looking once found
+            }
         }
+    };
+
+    if ([NSThread isMainThread]) {
+        readFrame();
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), readFrame);
     }
 
     return rectangle;
